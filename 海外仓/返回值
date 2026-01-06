@@ -1,0 +1,163 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html lang="ja"
+    xmlns:track  = "http://tracking.japanpost.jp/track">
+<head>
+
+<title>Individual Search Results - Japan Post</title>
+<meta http-equiv="Content-Type" content="text/html;charset=UTF-8" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Cache-Control" content="no-cache" />
+<meta http-equiv="Expires" content="-1" />
+<meta http-equiv="Content-Script-Type" content="text/javascript" />
+<meta http-equiv="Content-Style-Type" content="text/css" />
+<link rel="stylesheet" type="text/css" href="/services/css/style.css" />
+<script type="text/javascript" charset="UTF-8" src="/services/js/jquery-1.7.1.min.js"></script>
+<script type="text/javascript" charset="UTF-8" src="/services/js/common.js"></script>
+<script type="text/javascript" charset="UTF-8" src="/services/js/default.js"></script>
+
+<meta name="robots" content="noindex,nofollow,noarchive" />
+<script type="text/javascript" charset="UTF-8" src="/services/js/usercontrol_s.js"></script>
+</head>
+<body>
+<div id ="wrap">
+<p class="blockskip"><a href="#skip_content">このページの本文へ</a></p>
+
+    
+
+<div id="setting_alert">
+    <noscript>
+    <br />This page requires your browser to be JavaScript enabled. Please enable JavaScript in your browser.<br /><br />
+    </noscript>
+    <div id="cookie_disable"></div>
+</div>
+
+<div id="header" class="clearfix">
+    <p id="logo"><a href="http://www.post.japanpost.jp/"><img src="/services/img/logo.gif" alt="日本郵便サイトへ"></a></p>
+    <p id="lead"><img src="/services/img/head_txt_202204.gif" alt="進化するぬくもり。" /></p>
+    <div id="head_nav">
+        <ul id="nav">
+            <li><a href="http://www.post.japanpost.jp/question/faq/">Contact (Japanese Version Only)</a></li>
+            <li><a href="http://www.post.japanpost.jp/sitemap.html">Sitemap (Japanese Version Only)</a></li>
+            <li class="last"><a href="http://www.post.japanpost.jp/">日本語</a></li>
+        </ul>
+    </div>
+</div>
+
+
+
+<div id="con_wrap_no_rnav" class="clearfix">
+
+    
+
+    
+
+
+<div id="content">
+    
+    <h1 class="ttl_line m_b20">Individual number search results</h1>
+    
+
+    <form action="/services/srv/search" method="post" name="srv_searchActionForm">
+        <div class="indent">
+            <input type="submit" name="pathDetail" id="pathDetail" style="display:none;" />
+            <input type="hidden" id="requestNo" name="requestNo" value="" />
+            <input type="hidden" id="targetTypeCode" name="targetTypeCode" value="" />
+            <input type="hidden" id="targetFstDate" name="targetFstDate" value="" />
+            <input type="hidden" id="targetDupNum" name="targetDupNum" value="0" />
+            <input type="hidden" id="viewTrackingNo" name="viewTrackingNo" value="" />
+
+            
+                
+                
+                    <p class="m_b10 bold">Reference results for 1 postal items</p>
+                
+            
+            <table class="tableType01 txt_c m_b5" summary="照会結果">
+                <tr>
+                    <th scope="row" rowspan="2" class="bg01 w_120">Item number</th>
+                    <th scope="row" rowspan="2" class="bg01 w_80">Class of goods</th>
+                    <th scope="row" rowspan="2" class="bg01 w_80">Latest date</th>
+                    <th scope="row" rowspan="2" class="bg01 w_180">Latest status</th>
+                    <th scope="row" class="bg01 w_120">Latest handling office</th>
+                    <th scope="row" rowspan="2" class="bg01 w_80">Prefecture</th>
+                </tr>
+                <tr>
+                    <th scope="row" class="bg01">ZIP code（Postal code number）</th>
+                </tr>
+                
+                    
+                    
+                        
+                            
+                                
+                                    <tr>
+                                        <td>628383335930</td>
+                                    <td colspan="5" class="txt_l"><font color="ff0000">** Your item was not found. Confirm your item number and ask at your local office.</font></td>
+                                    </tr>
+                                
+                                
+                            
+                        
+                    
+                
+            </table>
+            <br>
+
+            
+                
+            
+        </div>
+
+        
+        <input type="hidden" id="locale" name="locale" value="en"/>
+        <input type="hidden" id="startingUrlPatten" name="startingUrlPatten" value="1"/>
+
+        
+
+        
+            <input type="hidden" name="trackingInfoViewDtoList[0].trackingInfoDto.trcnumidentycod" value=""/>
+            <input type="hidden" name="trackingInfoViewDtoList[0].trackingInfoDto.trcnum" value=""/>
+            
+            <input type="hidden" name="trackingInfoViewDtoList[0].trackingInfoDto.fsttimhdldtmString" value=""/>
+            <input type="hidden" name="trackingInfoViewDtoList[0].trackingInfoDto.dupmngnum" value=""/>
+
+            
+        
+
+        
+        
+        
+    </form>
+
+    
+    <p class="m_b10 txt_c"><a href="http://www.post.japanpost.jp/office_search/index.html"><img src="/services/common/displayImage/searchDisplayImage?registeredIdentifyId=480404BI1P50en02200001010000&imageFileId=btn_search_shop.gif" alt="Check the local office (Japanese only)."/></a></p>
+<p class="pagetop"><a href="#wrap">▲ Back to page top</a></p>
+    
+</div>
+
+
+
+
+</div>
+
+
+    
+<div id="btm_nav" class="clearfix">
+    <p><img src="/services/img/foot_txt.gif" alt="日本郵便株式会社" /></p>
+    <ul class="clearfix">
+        <li class="last"><a href="http://www.post.japanpost.jp/english/about/index.html">Corporate Information</a></li>
+    </ul>
+</div>
+
+
+
+    
+<div id="footer">
+    <p><img src="/services/img/foot_logo.gif" alt="日本郵政グループ" /></p>
+    <address><img src="/services/img/copyright.gif" alt="Copyright (c) JAPAN POST Co.,Ltd. All rights reserved." /></address>
+</div>
+
+
+</div>
+</body>
+</html>

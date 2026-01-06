@@ -3,7 +3,43 @@
  * 处理库存数据的数据库操作
  */
 import { query, execute, getConnection } from '@/lib/db'
-import mysql from 'mysql2/promise'
+import { PoolClient } from 'pg'
+
+/**
+ * 处理 label 字段，确保 PostgreSQL 兼容性
+ * 将空字符串、无效 JSON 等转换为 null
+ * @param label label 值（可能是数组、字符串或 null/undefined）
+ * @returns 处理后的 JSON 字符串或 null
+ */
+function processLabelField(label: number[] | string | null | undefined): string | null {
+  if (!label) {
+    return null
+  }
+  
+  if (Array.isArray(label)) {
+    // 空数组也转换为 JSON 字符串 '[]'
+    return JSON.stringify(label)
+  }
+  
+  if (typeof label === 'string') {
+    const trimmed = label.trim()
+    // 空字符串或 'null' 字符串，设为 null
+    if (trimmed === '' || trimmed === 'null') {
+      return null
+    }
+    
+    // 验证是否为有效的 JSON
+    try {
+      JSON.parse(trimmed)
+      return trimmed
+    } catch (e) {
+      // 无效的 JSON，设为 null
+      return null
+    }
+  }
+  
+  return null
+}
 
 export interface InventoryRecord {
   id?: number
@@ -81,7 +117,7 @@ export async function importInventoryData(
   data: Omit<InventoryRecord, 'id' | 'created_at' | 'updated_at'>[]
 ): Promise<{ success: boolean; inserted: number; updated: number; error?: string }> {
   const connection = await getConnection()
-  await connection.beginTransaction()
+  await connection.query('BEGIN')
 
   let inserted = 0
   let updated = 0
@@ -92,18 +128,18 @@ export async function importInventoryData(
 
     for (const record of data) {
       // 检查是否存在该SKU（使用事务连接）
-      const [existingRows] = await connection.execute<mysql.RowDataPacket[]>(
-        'SELECT id, charge, sale_day FROM inventory WHERE ware_sku = ?',
+      const existingResult = await connection.query(
+        'SELECT id, charge, sale_day FROM inventory WHERE ware_sku = $1',
         [record.ware_sku]
       )
-      const existing = existingRows as { id: number; charge: string | null; sale_day: number | null }[]
+      const existing = existingResult.rows as { id: number; charge: string | null; sale_day: number | null }[]
 
       // 检查该SKU是否在task表中（用于检测任务完成，使用事务连接）
-      const [taskRows] = await connection.execute<mysql.RowDataPacket[]>(
-        'SELECT ware_sku, sale_day, charge, promised_land, inventory_num, sales_num, label FROM task WHERE ware_sku = ?',
+      const taskResult = await connection.query(
+        'SELECT ware_sku, sale_day, charge, promised_land, inventory_num, sales_num, label FROM task WHERE ware_sku = $1',
         [record.ware_sku]
       )
-      const existingTask = taskRows as {
+      const existingTask = taskResult.rows as {
         ware_sku: string
         sale_day: number | null
         charge: string | null
@@ -113,15 +149,8 @@ export async function importInventoryData(
         label: string | null
       }[]
 
-      // 处理label字段：如果是数组，转换为JSON字符串；如果是字符串，直接使用；如果是undefined，设为null
-      let labelValue: string | null = null
-      if (record.label) {
-        if (Array.isArray(record.label)) {
-          labelValue = JSON.stringify(record.label)
-        } else if (typeof record.label === 'string') {
-          labelValue = record.label
-        }
-      }
+      // 处理label字段：使用统一函数处理，确保 PostgreSQL 兼容性
+      const labelValue = processLabelField(record.label)
 
       // 检测任务完成：如果旧sale_day >= 15 且 新sale_day < 15 且 该SKU在task表中
       const oldSaleDay = existingTask.length > 0 ? existingTask[0].sale_day : null
@@ -130,21 +159,15 @@ export async function importInventoryData(
       if (existingTask.length > 0 && oldSaleDay !== null && oldSaleDay >= 15 && newSaleDay !== null && newSaleDay < 15) {
         // 任务完成，保存到历史表
         const taskRecord = existingTask[0]
-        let taskLabelValue: string | null = null
-        if (taskRecord.label) {
-          if (Array.isArray(taskRecord.label)) {
-            taskLabelValue = JSON.stringify(taskRecord.label)
-          } else if (typeof taskRecord.label === 'string') {
-            taskLabelValue = taskRecord.label
-          }
-        }
+        // 处理任务记录的 label 字段
+        const taskLabelValue = processLabelField(taskRecord.label)
         
         // 使用事务连接执行插入历史记录
-        await connection.execute(
+        await connection.query(
           `INSERT INTO task_history (
             ware_sku, completed_sale_day, charge, promised_land,
             inventory_num, sales_num, label, completed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)`,
           [
             taskRecord.ware_sku,
             newSaleDay, // 完成时的可售天数（新的值）
@@ -157,7 +180,7 @@ export async function importInventoryData(
         )
         
         // 从task表中删除已完成的任务（使用事务连接）
-        await connection.execute('DELETE FROM task WHERE ware_sku = ?', [record.ware_sku])
+        await connection.query('DELETE FROM task WHERE ware_sku = $1', [record.ware_sku])
       }
 
       if (existing.length > 0) {
@@ -171,8 +194,8 @@ export async function importInventoryData(
         }
         
         // 使用事务连接执行更新
-        await connection.execute(
-          'UPDATE inventory SET inventory_num = ?, sales_num = ?, sale_day = ?, charge = ?, label = ?, updated_at = NOW() WHERE ware_sku = ?',
+        await connection.query(
+          'UPDATE inventory SET inventory_num = $1, sales_num = $2, sale_day = $3, charge = $4, label = $5, updated_at = CURRENT_TIMESTAMP WHERE ware_sku = $6',
           [
             record.inventory_num,
             record.sales_num,
@@ -190,8 +213,8 @@ export async function importInventoryData(
         const charge = record.charge || findChargeBySku(record.ware_sku, chargeMap) || null
         
         // 使用事务连接执行插入
-        await connection.execute(
-          'INSERT INTO inventory (ware_sku, inventory_num, sales_num, sale_day, charge, label, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())',
+        await connection.query(
+          'INSERT INTO inventory (ware_sku, inventory_num, sales_num, sale_day, charge, label, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
           [
             record.ware_sku,
             record.inventory_num,
@@ -205,7 +228,7 @@ export async function importInventoryData(
       }
     }
 
-    await connection.commit()
+    await connection.query('COMMIT')
     
     // 导入完成后，同步数据到 task 表（label包含2或4的记录）
     await syncInventoryToTask()
@@ -216,7 +239,7 @@ export async function importInventoryData(
       updated,
     }
   } catch (error: any) {
-    await connection.rollback()
+    await connection.query('ROLLBACK')
     console.error('导入库存数据失败:', error)
     return {
       success: false,
@@ -237,22 +260,23 @@ export async function importInventoryData(
  */
 export async function updateTaskCountDown(): Promise<{ success: boolean; error?: string }> {
   const connection = await getConnection()
-  await connection.beginTransaction()
+  await connection.query('BEGIN')
 
   try {
     // 使用 SQL 的 CASE WHEN 根据 promised_land 的值选择不同的计算方式
-    await execute(
+    // PostgreSQL: EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+    await connection.query(
       `UPDATE task SET count_down = CASE 
-        WHEN promised_land = 0 THEN 1 - DATEDIFF(NOW(), created_at)
-        ELSE 7 - DATEDIFF(NOW(), created_at)
+        WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+        ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
       END
       WHERE created_at IS NOT NULL`
     )
 
-    await connection.commit()
+    await connection.query('COMMIT')
     return { success: true }
   } catch (error: any) {
-    await connection.rollback()
+    await connection.query('ROLLBACK')
     console.error('更新 count_down 失败:', error)
     return {
       success: false,
@@ -271,51 +295,45 @@ export async function updateTaskCountDown(): Promise<{ success: boolean; error?:
  */
 export async function syncInventoryToTask(): Promise<{ success: boolean; error?: string }> {
   const connection = await getConnection()
-  await connection.beginTransaction()
+  await connection.query('BEGIN')
 
   try {
     // 1. 先清空 task 表
-    await execute('DELETE FROM task')
+    await connection.query('DELETE FROM task')
 
     // 2. 从 inventory 表查询符合条件的记录
     // 条件：label 包含 4（在售天数预警）或者 (label 包含 2 但不包含 1 且不包含 5)（有库存无销量）
-    // 使用 JSON_CONTAINS 或 JSON_SEARCH 来查询 JSON 字段
+    // PostgreSQL: 使用 JSONB @> 操作符
     const sql = `
       SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, created_at, updated_at
       FROM inventory
-      WHERE (JSON_CONTAINS(label, CAST('4' AS JSON)) OR JSON_SEARCH(label, 'one', '4') IS NOT NULL)
-         OR ((JSON_CONTAINS(label, CAST('2' AS JSON)) OR JSON_SEARCH(label, 'one', '2') IS NOT NULL)
-             AND (NOT JSON_CONTAINS(label, CAST('1' AS JSON)) AND JSON_SEARCH(label, 'one', '1') IS NULL)
-             AND (NOT JSON_CONTAINS(label, CAST('5' AS JSON)) AND JSON_SEARCH(label, 'one', '5') IS NULL))
+      WHERE (label::jsonb @> '[4]'::jsonb)
+         OR ((label::jsonb @> '[2]'::jsonb)
+             AND NOT (label::jsonb @> '[1]'::jsonb)
+             AND NOT (label::jsonb @> '[5]'::jsonb))
     `
     
-    const results = await query<any>(sql)
+    const result = await connection.query(sql)
+    const results = result.rows
 
     // 3. 将查询结果插入到 task 表
     for (const record of results) {
-      // 处理 label 字段
-      let labelValue: string | null = null
-      if (record.label) {
-        if (Array.isArray(record.label)) {
-          labelValue = JSON.stringify(record.label)
-        } else if (typeof record.label === 'string') {
-          labelValue = record.label
-        }
-      }
+      // 处理 label 字段：使用统一函数处理
+      const labelValue = processLabelField(record.label)
 
-      // 使用 INSERT ... ON DUPLICATE KEY UPDATE 来处理唯一键冲突
-      // count_down 会在查询时通过 DATEDIFF 计算，这里不需要设置
-      await execute(
+      // PostgreSQL: 使用 ON CONFLICT 来处理唯一键冲突
+      // count_down 会在查询时通过日期差计算，这里不需要设置
+      await connection.query(
         `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-         inventory_num = VALUES(inventory_num),
-         sales_num = VALUES(sales_num),
-         sale_day = VALUES(sale_day),
-         charge = VALUES(charge),
-         label = VALUES(label),
-         promised_land = VALUES(promised_land),
-         updated_at = VALUES(updated_at)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (ware_sku) DO UPDATE SET
+         inventory_num = EXCLUDED.inventory_num,
+         sales_num = EXCLUDED.sales_num,
+         sale_day = EXCLUDED.sale_day,
+         charge = EXCLUDED.charge,
+         label = EXCLUDED.label,
+         promised_land = EXCLUDED.promised_land,
+         updated_at = EXCLUDED.updated_at`,
         [
           record.ware_sku,
           record.inventory_num,
@@ -330,20 +348,21 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
       )
     }
 
-    await connection.commit()
+    await connection.query('COMMIT')
     return { success: true }
   } catch (error: any) {
-    await connection.rollback()
+    await connection.query('ROLLBACK')
     console.error('同步数据到 task 表失败:', error)
     
     // 如果 JSON 函数不支持，使用备用方法
     try {
       // 重新开始事务
-      await connection.beginTransaction()
-      await execute('DELETE FROM task')
+      await connection.query('BEGIN')
+      await connection.query('DELETE FROM task')
       
       // 获取所有 inventory 记录，在前端筛选
-      const allRecords = await query<any>('SELECT * FROM inventory')
+      const allResult = await connection.query('SELECT * FROM inventory')
+      const allRecords = allResult.rows
       
       for (const record of allRecords) {
         let labels: number[] = []
@@ -362,24 +381,20 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
         const hasInventoryNoSales = labels.includes(2) && !labels.includes(1) && !labels.includes(5)
         
         if (Array.isArray(labels) && (isOver15Days || hasInventoryNoSales)) {
-          let labelValue: string | null = null
-          if (Array.isArray(labels)) {
-            labelValue = JSON.stringify(labels)
-          } else if (typeof record.label === 'string') {
-            labelValue = record.label
-          }
+          // 处理 label 字段：使用统一函数处理
+          const labelValue = processLabelField(record.label)
           
-          await execute(
+          await connection.query(
             `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-             inventory_num = VALUES(inventory_num),
-             sales_num = VALUES(sales_num),
-             sale_day = VALUES(sale_day),
-             charge = VALUES(charge),
-             label = VALUES(label),
-             promised_land = VALUES(promised_land),
-             updated_at = VALUES(updated_at)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (ware_sku) DO UPDATE SET
+             inventory_num = EXCLUDED.inventory_num,
+             sales_num = EXCLUDED.sales_num,
+             sale_day = EXCLUDED.sale_day,
+             charge = EXCLUDED.charge,
+             label = EXCLUDED.label,
+             promised_land = EXCLUDED.promised_land,
+             updated_at = EXCLUDED.updated_at`,
             [
               record.ware_sku,
               record.inventory_num,
@@ -395,10 +410,10 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
         }
       }
       
-      await connection.commit()
+      await connection.query('COMMIT')
       return { success: true }
     } catch (fallbackError: any) {
-      await connection.rollback()
+      await connection.query('ROLLBACK')
       return {
         success: false,
         error: fallbackError.message || '同步失败',
@@ -423,32 +438,33 @@ export async function getInventoryStatistics(): Promise<{
 }> {
   try {
     // 统计label包含4的数量（在售天数超15天）
+    // PostgreSQL: 使用 JSONB @> 操作符
     const over15DaysResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE JSON_CONTAINS(label, '4') OR JSON_SEARCH(label, 'one', '4') IS NOT NULL"
+      "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[4]'::jsonb"
     )
     const over_15_days = Number(over15DaysResult[0]?.count) || 0
 
     // 统计label包含2的数量（无销量）
     const noSalesResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE JSON_CONTAINS(label, '2') OR JSON_SEARCH(label, 'one', '2') IS NOT NULL"
+      "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[2]'::jsonb"
     )
     const no_sales = Number(noSalesResult[0]?.count) || 0
 
     // 统计label包含5的数量（库存待冲平）
     const negativeInventoryResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE JSON_CONTAINS(label, '5') OR JSON_SEARCH(label, 'one', '5') IS NOT NULL"
+      "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[5]'::jsonb"
     )
     const negative_inventory = Number(negativeInventoryResult[0]?.count) || 0
 
     // 统计label包含2但不包含1且不包含5的数量（有库存无销量）
     const hasInventoryNoSalesResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE (JSON_CONTAINS(label, '2') OR JSON_SEARCH(label, 'one', '2') IS NOT NULL) AND (NOT JSON_CONTAINS(label, '1') AND JSON_SEARCH(label, 'one', '1') IS NULL) AND (NOT JSON_CONTAINS(label, '5') AND JSON_SEARCH(label, 'one', '5') IS NULL)"
+      "SELECT COUNT(*) as count FROM inventory WHERE (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)"
     )
     const has_inventory_no_sales = Number(hasInventoryNoSalesResult[0]?.count) || 0
 
     // 统计label不包含1、2、4、5的数量（正常销售）
     const normalSalesResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE (label IS NULL OR label = '[]' OR (NOT JSON_CONTAINS(label, '1') AND JSON_SEARCH(label, 'one', '1') IS NULL) AND (NOT JSON_CONTAINS(label, '2') AND JSON_SEARCH(label, 'one', '2') IS NULL) AND (NOT JSON_CONTAINS(label, '4') AND JSON_SEARCH(label, 'one', '4') IS NULL) AND (NOT JSON_CONTAINS(label, '5') AND JSON_SEARCH(label, 'one', '5') IS NULL))"
+      "SELECT COUNT(*) as count FROM inventory WHERE (label IS NULL OR label::text = '[]' OR (NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[4]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)))"
     )
     const normal_sales = Number(normalSalesResult[0]?.count) || 0
 
@@ -520,23 +536,26 @@ export async function getInventoryData(
     let sql =
       'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, created_at, updated_at FROM inventory WHERE 1=1'
     const params: any[] = []
+    let paramIndex = 1
 
     if (searchSku) {
-      sql += ' AND ware_sku LIKE ?'
+      sql += ` AND ware_sku LIKE $${paramIndex}`
       params.push(`%${searchSku}%`)
+      paramIndex++
     }
 
     // 根据label筛选
+    // PostgreSQL: 使用 JSONB @> 操作符
     if (labelFilter !== undefined) {
       if (labelFilter === 'normal') {
         // 正常销售：label不包含1、2、4、5
-        sql += ` AND (label IS NULL OR label = '[]' OR ((NOT JSON_CONTAINS(label, '1') AND JSON_SEARCH(label, 'one', '1') IS NULL) AND (NOT JSON_CONTAINS(label, '2') AND JSON_SEARCH(label, 'one', '2') IS NULL) AND (NOT JSON_CONTAINS(label, '4') AND JSON_SEARCH(label, 'one', '4') IS NULL) AND (NOT JSON_CONTAINS(label, '5') AND JSON_SEARCH(label, 'one', '5') IS NULL)))`
+        sql += ` AND (label IS NULL OR label::text = '[]' OR ((NOT (label::jsonb @> '[1]'::jsonb)) AND (NOT (label::jsonb @> '[2]'::jsonb)) AND (NOT (label::jsonb @> '[4]'::jsonb)) AND (NOT (label::jsonb @> '[5]'::jsonb))))`
       } else if (labelFilter === '2_not_1') {
         // 特殊筛选：label包含2但不包含1且不包含5（有库存无销量）
-        sql += ` AND (JSON_CONTAINS(label, '2') OR JSON_SEARCH(label, 'one', '2') IS NOT NULL) AND (NOT JSON_CONTAINS(label, '1') AND JSON_SEARCH(label, 'one', '1') IS NULL) AND (NOT JSON_CONTAINS(label, '5') AND JSON_SEARCH(label, 'one', '5') IS NULL)`
+        sql += ` AND (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)`
       } else {
         // 普通筛选：label包含指定值
-        sql += ` AND (JSON_CONTAINS(label, '${labelFilter}') OR JSON_SEARCH(label, 'one', '${labelFilter}') IS NOT NULL)`
+        sql += ` AND (label::jsonb @> '[${labelFilter}]'::jsonb)`
       }
     }
 
@@ -598,26 +617,28 @@ export async function getTaskData(
     // 先更新所有记录的 count_down（根据 promised_land 使用不同计算逻辑）
     await updateTaskCountDown()
     // 使用 CASE WHEN 根据 promised_land 的值计算 count_down
-    // promised_land = 0 时：1 - DATEDIFF(NOW(), created_at)
-    // promised_land != 0 时：7 - DATEDIFF(NOW(), created_at)
+    // PostgreSQL: EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
     let sql =
-      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, CASE WHEN promised_land = 0 THEN 1 - DATEDIFF(NOW(), created_at) ELSE 7 - DATEDIFF(NOW(), created_at) END as count_down, created_at, updated_at FROM task WHERE 1=1'
+      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END as count_down, created_at, updated_at FROM task WHERE 1=1'
     const params: any[] = []
+    let paramIndex = 1
 
     if (searchSku) {
-      sql += ' AND ware_sku LIKE ?'
+      sql += ` AND ware_sku LIKE $${paramIndex}`
       params.push(`%${searchSku}%`)
+      paramIndex++
     }
 
     // 标签筛选（前两个）
+    // PostgreSQL: 使用 JSONB @> 操作符
     if (labelFilter === 'over_15_days') {
       // 在售天数超15天：label 包含 4
-      sql += ` AND (JSON_CONTAINS(label, CAST('4' AS JSON)) OR JSON_SEARCH(label, 'one', '4') IS NOT NULL)`
+      sql += ` AND (label::jsonb @> '[4]'::jsonb)`
     } else if (labelFilter === 'has_inventory_no_sales') {
       // 有库存无销量：label 包含 2 但不包含 1 且不包含 5
-      sql += ` AND (JSON_CONTAINS(label, CAST('2' AS JSON)) OR JSON_SEARCH(label, 'one', '2') IS NOT NULL)`
-      sql += ` AND (NOT JSON_CONTAINS(label, CAST('1' AS JSON)) AND JSON_SEARCH(label, 'one', '1') IS NULL)`
-      sql += ` AND (NOT JSON_CONTAINS(label, CAST('5' AS JSON)) AND JSON_SEARCH(label, 'one', '5') IS NULL)`
+      sql += ` AND (label::jsonb @> '[2]'::jsonb)`
+      sql += ` AND NOT (label::jsonb @> '[1]'::jsonb)`
+      sql += ` AND NOT (label::jsonb @> '[5]'::jsonb)`
     }
 
     // 状态筛选（后三个）
@@ -629,13 +650,14 @@ export async function getTaskData(
       sql += ' AND promised_land IN (1, 2, 3)'
     } else if (statusFilter === 'timeout') {
       // 超时任务：count_down < 0
-      sql += ' AND (CASE WHEN promised_land = 0 THEN 1 - DATEDIFF(NOW(), created_at) ELSE 7 - DATEDIFF(NOW(), created_at) END) < 0'
+      sql += ' AND (CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END) < 0'
     }
 
     // 负责人筛选
     if (chargeFilter) {
-      sql += ' AND charge = ?'
+      sql += ` AND charge = $${paramIndex}`
       params.push(chargeFilter)
+      paramIndex++
     }
 
     sql += ' ORDER BY updated_at DESC, id DESC'
@@ -704,21 +726,26 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
 }> {
   try {
     // 统计label包含4的数量（在售天数超15天）
-    let over15DaysSql = "SELECT COUNT(*) as count FROM task WHERE (JSON_CONTAINS(label, CAST('4' AS JSON)) OR JSON_SEARCH(label, 'one', '4') IS NOT NULL)"
+    // PostgreSQL: 使用 JSONB @> 操作符
+    let over15DaysSql = "SELECT COUNT(*) as count FROM task WHERE label::jsonb @> '[4]'::jsonb"
     const over15DaysParams: any[] = []
+    let paramIndex = 1
     if (chargeFilter) {
-      over15DaysSql += ' AND charge = ?'
+      over15DaysSql += ` AND charge = $${paramIndex}`
       over15DaysParams.push(chargeFilter)
+      paramIndex++
     }
     const over15DaysResult = await query<{ count: string | number }>(over15DaysSql, over15DaysParams)
     const over_15_days = Number(over15DaysResult[0]?.count) || 0
 
     // 统计label包含2但不包含1且不包含5的数量（有库存无销量）
-    let hasInventoryNoSalesSql = "SELECT COUNT(*) as count FROM task WHERE (JSON_CONTAINS(label, CAST('2' AS JSON)) OR JSON_SEARCH(label, 'one', '2') IS NOT NULL) AND (NOT JSON_CONTAINS(label, CAST('1' AS JSON)) AND JSON_SEARCH(label, 'one', '1') IS NULL) AND (NOT JSON_CONTAINS(label, CAST('5' AS JSON)) AND JSON_SEARCH(label, 'one', '5') IS NULL)"
+    let hasInventoryNoSalesSql = "SELECT COUNT(*) as count FROM task WHERE (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)"
     const hasInventoryNoSalesParams: any[] = []
+    paramIndex = 1
     if (chargeFilter) {
-      hasInventoryNoSalesSql += ' AND charge = ?'
+      hasInventoryNoSalesSql += ` AND charge = $${paramIndex}`
       hasInventoryNoSalesParams.push(chargeFilter)
+      paramIndex++
     }
     const hasInventoryNoSalesResult = await query<{ count: string | number }>(hasInventoryNoSalesSql, hasInventoryNoSalesParams)
     const has_inventory_no_sales = Number(hasInventoryNoSalesResult[0]?.count) || 0
@@ -726,9 +753,11 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
     // 统计promised_land = 0的数量（未选择方案）
     let noSolutionSql = 'SELECT COUNT(*) as count FROM task WHERE promised_land = 0'
     const noSolutionParams: any[] = []
+    paramIndex = 1
     if (chargeFilter) {
-      noSolutionSql += ' AND charge = ?'
+      noSolutionSql += ` AND charge = $${paramIndex}`
       noSolutionParams.push(chargeFilter)
+      paramIndex++
     }
     const noSolutionResult = await query<{ count: string | number }>(noSolutionSql, noSolutionParams)
     const no_solution = Number(noSolutionResult[0]?.count) || 0
@@ -736,19 +765,24 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
     // 统计promised_land IN (1,2,3)的数量（任务正在进行中）
     let inProgressSql = 'SELECT COUNT(*) as count FROM task WHERE promised_land IN (1, 2, 3)'
     const inProgressParams: any[] = []
+    paramIndex = 1
     if (chargeFilter) {
-      inProgressSql += ' AND charge = ?'
+      inProgressSql += ` AND charge = $${paramIndex}`
       inProgressParams.push(chargeFilter)
+      paramIndex++
     }
     const inProgressResult = await query<{ count: string | number }>(inProgressSql, inProgressParams)
     const in_progress = Number(inProgressResult[0]?.count) || 0
 
     // 统计 count_down < 0 的数量（超时任务）
-    let timeoutSql = 'SELECT COUNT(*) as count FROM task WHERE (CASE WHEN promised_land = 0 THEN 1 - DATEDIFF(NOW(), created_at) ELSE 7 - DATEDIFF(NOW(), created_at) END) < 0'
+    // PostgreSQL: 使用 EXTRACT(DAY FROM ...) 计算日期差
+    let timeoutSql = 'SELECT COUNT(*) as count FROM task WHERE (CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END) < 0'
     const timeoutParams: any[] = []
+    paramIndex = 1
     if (chargeFilter) {
-      timeoutSql += ' AND charge = ?'
+      timeoutSql += ` AND charge = $${paramIndex}`
       timeoutParams.push(chargeFilter)
+      paramIndex++
     }
     const timeoutResult = await query<{ count: string | number }>(timeoutSql, timeoutParams)
     const timeout = Number(timeoutResult[0]?.count) || 0
@@ -1029,16 +1063,17 @@ export async function updateTaskPromisedLand(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // 更新 promised_land 时，同时更新 count_down（根据新的 promised_land 值计算）
+    // PostgreSQL: 使用 EXTRACT(DAY FROM ...) 计算日期差
     await execute(
       `UPDATE task SET 
-        promised_land = ?, 
+        promised_land = $1, 
         count_down = CASE 
-          WHEN ? = 0 THEN 1 - DATEDIFF(NOW(), created_at)
-          ELSE 7 - DATEDIFF(NOW(), created_at)
+          WHEN $1 = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+          ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
         END,
-        updated_at = NOW() 
-       WHERE ware_sku = ?`,
-      [promisedLand, promisedLand, wareSku]
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ware_sku = $2`,
+      [promisedLand, wareSku]
     )
     return { success: true }
   } catch (error: any) {

@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
-import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle } from "lucide-react"
+import { useState, useEffect, useTransition, useRef } from "react"
+import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
@@ -14,7 +14,7 @@ import {
   PaginationPrevious,
   PaginationEllipsis,
 } from "@/components/ui/pagination"
-import { fetchLogisticsData, fetchLogisticsStatistics } from "@/app/actions/logistics"
+import { fetchLogisticsData, fetchLogisticsStatistics, importLogisticsFile, updateLogisticsStatus } from "@/app/actions/logistics"
 import type { LogisticsRecord } from "@/lib/logistics-data"
 import { getStatusLabel } from "@/lib/status-mapping"
 import * as XLSX from "xlsx"
@@ -33,6 +33,19 @@ export default function OverseasLogistics() {
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
+  const [importing, setImporting] = useState(false)
+  const [updating, setUpdating] = useState(false)
+  const [importResult, setImportResult] = useState<{
+    success: boolean
+    message?: string
+    error?: string
+  } | null>(null)
+  const [updateResult, setUpdateResult] = useState<{
+    success: boolean
+    message?: string
+    error?: string
+  } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const pageSize = 50
 
   // 加载物流数据
@@ -106,6 +119,91 @@ export default function OverseasLogistics() {
   const startIndex = (currentPage - 1) * pageSize
   const endIndex = startIndex + pageSize
   const paginatedData = logisticsData.slice(startIndex, endIndex)
+
+  // 处理文件选择（导入）
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // 验证文件类型
+    if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+      alert('请选择Excel文件（.xlsx或.xls格式）')
+      return
+    }
+
+    // 验证文件大小（10MB）
+    const maxSize = 10 * 1024 * 1024
+    if (file.size > maxSize) {
+      alert('文件大小不能超过10MB')
+      return
+    }
+
+    setImporting(true)
+    setImportResult(null)
+
+    try {
+      // 创建FormData
+      const formData = new FormData()
+      formData.append('file', file)
+
+      // 调用Server Action导入
+      const result = await importLogisticsFile(formData)
+
+      setImportResult({
+        success: result.success,
+        message: result.message,
+        error: result.error,
+      })
+
+      // 导入成功后，刷新数据
+      if (result.success) {
+        await loadLogisticsData(searchQuery || undefined, statusFilter)
+        await loadStatistics()
+      }
+    } catch (error: any) {
+      console.error('导入失败:', error)
+      setImportResult({
+        success: false,
+        error: error.message || '导入失败，请重试',
+      })
+    } finally {
+      setImporting(false)
+      // 清空文件输入，以便可以重复选择同一文件
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  // 处理更新按钮（运行爬虫）
+  const handleUpdate = async () => {
+    setUpdating(true)
+    setUpdateResult(null)
+
+    try {
+      const result = await updateLogisticsStatus()
+
+      setUpdateResult({
+        success: result.success,
+        message: result.message,
+        error: result.error,
+      })
+
+      // 更新成功后，刷新数据
+      if (result.success) {
+        await loadLogisticsData(searchQuery || undefined, statusFilter)
+        await loadStatistics()
+      }
+    } catch (error: any) {
+      console.error('更新失败:', error)
+      setUpdateResult({
+        success: false,
+        error: error.message || '更新失败，请重试',
+      })
+    } finally {
+      setUpdating(false)
+    }
+  }
 
   // 导出数据功能（导出所有筛选后的数据，不是当前页）
   const handleExport = () => {
@@ -181,9 +279,28 @@ export default function OverseasLogistics() {
             <Download className="h-4 w-4" />
             导出数据
           </Button>
-          <Button variant="outline" className="gap-2">
-            <Upload className="h-4 w-4" />
-            导入数据
+          <div className="relative">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleFileSelect}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              disabled={importing}
+            />
+            <Button variant="outline" className="gap-2" disabled={importing}>
+              <Upload className="h-4 w-4" />
+              {importing ? '导入中...' : '导入数据'}
+            </Button>
+          </div>
+          <Button 
+            variant="outline" 
+            className="gap-2" 
+            onClick={handleUpdate}
+            disabled={updating}
+          >
+            <RefreshCw className={`h-4 w-4 ${updating ? 'animate-spin' : ''}`} />
+            {updating ? '更新中...' : '更新'}
           </Button>
         </div>
       </Card>
@@ -259,6 +376,50 @@ export default function OverseasLogistics() {
         </Card>
       </div>
 
+      {/* 导入结果提示 */}
+      {importResult && (
+        <Card className={`p-4 ${importResult.success ? 'bg-green-50 border-green-200' : 'bg-destructive/10 border-destructive/20'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {importResult.success ? (
+                <span className="text-sm font-medium text-green-700">{importResult.message}</span>
+              ) : (
+                <span className="text-sm font-medium text-destructive">导入失败：{importResult.error}</span>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setImportResult(null)}
+            >
+              关闭
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* 更新结果提示 */}
+      {updateResult && (
+        <Card className={`p-4 ${updateResult.success ? 'bg-green-50 border-green-200' : 'bg-destructive/10 border-destructive/20'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {updateResult.success ? (
+                <span className="text-sm font-medium text-green-700">{updateResult.message}</span>
+              ) : (
+                <span className="text-sm font-medium text-destructive">更新失败：{updateResult.error}</span>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setUpdateResult(null)}
+            >
+              关闭
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* 错误提示 */}
       {error && (
         <Card className="p-4 bg-destructive/10 border-destructive/20">
@@ -278,9 +439,19 @@ export default function OverseasLogistics() {
               重试
             </Button>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            请检查：1. MySQL 服务是否启动 2. 数据库 seas_ware 是否存在 3. 表 post_searchs 是否存在 4. 数据库配置是否正确
-          </p>
+          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+            <p>请按以下步骤检查：</p>
+            <ol className="list-decimal list-inside space-y-1 ml-2">
+              <li>检查 PostgreSQL 服务是否已启动（本地）或 Neon 连接是否正常（云端）</li>
+              <li>检查数据库 <code className="px-1 py-0.5 bg-muted rounded">seas_ware</code> 是否存在</li>
+              <li>检查表 <code className="px-1 py-0.5 bg-muted rounded">post_searchs</code> 是否存在（执行 sql/postgresql/create_post_searchs_table.sql）</li>
+              <li>检查 <code className="px-1 py-0.5 bg-muted rounded">.env</code> 文件中的数据库配置（DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSL）</li>
+              <li>确认已重启开发服务器（环境变量修改后需要重启）</li>
+            </ol>
+            <p className="mt-2 pt-2 border-t border-border">
+              📖 详细配置说明请查看：<code className="px-1 py-0.5 bg-muted rounded">md/快速配置指南.md</code>
+            </p>
+          </div>
         </Card>
       )}
 

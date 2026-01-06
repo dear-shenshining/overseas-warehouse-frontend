@@ -307,7 +307,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
             </Button>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            请检查：1. MySQL 服务是否启动 2. 数据库 seas_ware 是否存在 3. 表 task 是否存在 4. 数据库配置是否正确
+            请检查：1. PostgreSQL 服务是否启动 2. 数据库 seas_ware 是否存在 3. 表 task 是否存在 4. 数据库配置是否正确（.env 文件）
           </p>
         </Card>
       )}

@@ -28,12 +28,14 @@ export async function getLogisticsData(
   searchNum?: string,
   statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal'
 ): Promise<LogisticsRecord[]> {
-  let sql = 'SELECT id, search_num, states, Ship_date, channel FROM post_searchs WHERE 1=1'
+  let sql = 'SELECT id, search_num, states, ship_date as "Ship_date", channel FROM post_searchs WHERE 1=1'
   const params: any[] = []
+  let paramIndex = 1
 
   if (searchNum) {
-    sql += ' AND search_num LIKE ?'
+    sql += ` AND search_num LIKE $${paramIndex}`
     params.push(`%${searchNum}%`)
+    paramIndex++
   }
 
   // 根据状态筛选类型添加筛选条件
@@ -46,14 +48,14 @@ export async function getLogisticsData(
   } else if (statusFilter === 'online_abnormal') {
     // 上网异常：未上网且发货日期距今超过3天
     sql += " AND states IN ('Not registered', '未上网')"
-    sql += " AND Ship_date IS NOT NULL"
-    sql += " AND DATEDIFF(CURDATE(), Ship_date) >= 3"
+    sql += " AND ship_date IS NOT NULL"
+    sql += " AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3"
   } else if (statusFilter === 'in_transit') {
     // 运输中：除了 Final delivery、退回/异常、未上网 之外的所有状态（包括Retention，但不包括办公室关闭/滞留和缺席/尝试投递）
     sql += ` AND states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`
   }
 
-  sql += ' ORDER BY Ship_date DESC, id DESC'
+  sql += ' ORDER BY ship_date DESC, id DESC'
 
   const results = await query<LogisticsRecord>(sql, params)
   return results
@@ -90,8 +92,8 @@ export async function getLogisticsStatistics(): Promise<LogisticsStatistics> {
   const onlineAbnormalResult = await query<{ count: string | number }>(
     `SELECT COUNT(*) as count FROM post_searchs 
      WHERE states IN ('Not registered', '未上网')
-     AND Ship_date IS NOT NULL
-     AND DATEDIFF(CURDATE(), Ship_date) >= 3`
+     AND ship_date IS NOT NULL
+     AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`
   )
   const online_abnormal = Number(onlineAbnormalResult[0]?.count) || 0
 

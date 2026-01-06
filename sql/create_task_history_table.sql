@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS `task_history` (
   `label` JSON DEFAULT NULL COMMENT '完成时的标签（快照）',
   INDEX `idx_ware_sku` (`ware_sku`),
   INDEX `idx_completed_at` (`completed_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史任务表（已完成的任务）';
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史任务表（已完成的任务）';
 
 -- 表结构说明：
 -- id: 自增主键，唯一标识每条记录

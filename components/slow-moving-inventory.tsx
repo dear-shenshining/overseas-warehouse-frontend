@@ -418,7 +418,7 @@ export default function SlowMovingInventory() {
             </Button>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            请检查：1. MySQL 服务是否启动 2. 数据库 seas_ware 是否存在 3. 表 inventory 是否存在 4. 数据库配置是否正确
+            请检查：1. PostgreSQL 服务是否启动（本地）或 Neon 连接是否正常（云端） 2. 数据库 seas_ware 是否存在 3. 表 inventory 是否存在（执行 sql/postgresql/create_inventory_table.sql） 4. 数据库配置是否正确（.env 文件）
           </p>
         </Card>
       )}
