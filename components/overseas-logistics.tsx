@@ -180,20 +180,79 @@ export default function OverseasLogistics() {
     setUpdating(true)
     setUpdateResult(null)
 
-    try {
-      const result = await updateLogisticsStatus()
+    let totalProcessed = 0
+    let totalSuccess = 0
+    let totalFailed = 0
+    let totalSkipped = 0
+    let totalRetries = 0
+    let totalBatches = 0
+    let roundCount = 0
+    const MAX_ROUNDS = 20 // 最多自动执行 20 轮，避免无限循环
 
-      setUpdateResult({
-        success: result.success,
-        message: result.message,
-        error: result.error,
-      })
+    try {
+      // 自动递归处理，直到全部完成或达到最大轮数
+      while (roundCount < MAX_ROUNDS) {
+        roundCount++
+        console.log(`🔄 开始第 ${roundCount} 轮处理...`)
+
+        const result = await updateLogisticsStatus()
+
+        if (!result.success) {
+          // 如果出错，停止递归
+          setUpdateResult({
+            success: false,
+            message: result.error || '更新失败',
+            error: result.error,
+          })
+          break
+        }
+
+        // 累计统计信息
+        if (result.stats) {
+          totalProcessed += result.stats.total || 0
+          totalSuccess += result.stats.success || 0
+          totalFailed += result.stats.failed || 0
+          totalSkipped += result.stats.skipped || 0
+          totalRetries += result.stats.retries || 0
+          totalBatches += result.stats.batches || 0
+        }
+
+        // 更新 UI 显示当前进度
+        const currentMessage = result.stats?.hasMore
+          ? `正在处理中...（第 ${roundCount} 轮，已处理 ${totalProcessed} 个，还有待处理）`
+          : `处理完成！总计处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个，总重试 ${totalRetries} 次，共 ${totalBatches} 个批次`
+        
+        setUpdateResult({
+          success: true,
+          message: currentMessage,
+        })
+
+        // 如果还有待处理的追踪号，继续下一轮
+        if (result.stats?.hasMore) {
+          console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${roundCount + 1} 轮...`)
+          // 短暂延迟后继续下一轮
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        } else {
+          // 全部处理完成
+          setUpdateResult({
+            success: true,
+            message: `✅ 全部处理完成！总计处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个，总重试 ${totalRetries} 次，共 ${totalBatches} 个批次，执行了 ${roundCount} 轮`,
+          })
+          break
+        }
+      }
+
+      // 如果达到最大轮数，提示用户
+      if (roundCount >= MAX_ROUNDS) {
+        setUpdateResult({
+          success: true,
+          message: `⚠️ 已达到最大处理轮数（${MAX_ROUNDS} 轮）。已处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个。如果还有待处理的追踪号，请稍后再次点击"更新"按钮`,
+        })
+      }
 
       // 更新成功后，刷新数据
-      if (result.success) {
-        await loadLogisticsData(searchQuery || undefined, statusFilter)
-        await loadStatistics()
-      }
+      await loadLogisticsData(searchQuery || undefined, statusFilter)
+      await loadStatistics()
     } catch (error: any) {
       console.error('更新失败:', error)
       setUpdateResult({

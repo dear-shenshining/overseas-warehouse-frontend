@@ -20,9 +20,11 @@ interface TrackingResult {
 }
 
 // 批处理大小与重试策略（控制单次任务时长，避免 Vercel 300s 超时）
-const BATCH_SIZE = 50
-const MAX_RETRIES = 5
-const MAX_RETRY_DELAY_MS = 3000 // 单次重试最大等待 3s（指数退避上限）
+const BATCH_SIZE = 20 // 每批处理 20 个追踪号
+const MAX_RETRIES = 3 // 减少重试次数，加快处理速度
+const MAX_RETRY_DELAY_MS = 2000 // 单次重试最大等待 2s（指数退避上限）
+const MAX_EXECUTION_TIME_MS = 240000 // 最大执行时间 4 分钟（240秒），留出安全余量
+const SAFE_TIME_BUFFER_MS = 30000 // 安全时间缓冲 30 秒，在超时前提前返回
 
 /**
  * 获取待查询的追踪号
@@ -399,8 +401,17 @@ async function processBatch(
 }
 
 /**
- * 运行爬虫主函数（分批处理机制，避免超时）
- * 每次处理 50 个，失败的加入队列后面继续处理
+ * 检查是否还有足够时间继续处理
+ */
+function hasEnoughTime(startTime: number): boolean {
+  const elapsed = Date.now() - startTime
+  const remaining = MAX_EXECUTION_TIME_MS - elapsed
+  return remaining > SAFE_TIME_BUFFER_MS
+}
+
+/**
+ * 运行爬虫主函数（自动分批处理，带超时保护）
+ * 点一次"更新"按钮，自动分批处理完所有追踪号，直到超时或全部完成
  */
 export async function runCrawler(): Promise<{
   success: boolean
@@ -413,10 +424,12 @@ export async function runCrawler(): Promise<{
     skipped: number
     retries: number
     batches: number
+    hasMore: boolean // 是否还有更多待处理的追踪号
   }
 }> {
+  const startTime = Date.now()
+  
   try {
-    const MAX_BATCHES = 10 // 最多处理 10 个批次，避免无限循环（10 * 50 = 500 个）
     const stats = {
       success: 0,
       failed: 0,
@@ -425,69 +438,88 @@ export async function runCrawler(): Promise<{
     }
     let totalProcessed = 0
     let batchCount = 0
-    const processedSet = new Set<string>() // 记录已处理的追踪号，避免重复处理
 
-    console.log(`📋 开始分批处理追踪号（每批 ${BATCH_SIZE} 个，最多 ${MAX_BATCHES} 批）...`)
+    console.log(`📋 开始自动分批处理追踪号（每批 ${BATCH_SIZE} 个，最大执行时间 ${MAX_EXECUTION_TIME_MS / 1000} 秒）...`)
     console.log('='.repeat(60))
 
-    // 分批处理循环
-    while (batchCount < MAX_BATCHES) {
+    // 自动分批处理循环
+    while (hasEnoughTime(startTime)) {
       batchCount++
-      console.log(`\n🔄 开始处理第 ${batchCount} 批（最多 ${MAX_BATCHES} 批）...`)
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      console.log(`\n🔄 开始处理第 ${batchCount} 批（已用时 ${elapsed} 秒）...`)
       console.log('-'.repeat(60))
 
       // 获取待查询的追踪号（每次取 BATCH_SIZE 个，按 updated_at 排序，失败的会排在后面）
       const trackingNumbers = await fetchPendingSearchNumbers()
+      
+      console.log(`📥 获取到 ${trackingNumbers.length} 个待查询的追踪号`)
 
       if (trackingNumbers.length === 0) {
         console.log('✅ 没有更多待查询的追踪号')
         break
       }
 
-      // 过滤掉已处理的追踪号（避免同一批次内重复处理）
-      const newItems = trackingNumbers.filter(
-        (item) => !processedSet.has(item.search_num)
-      )
-
-      if (newItems.length === 0) {
-        console.log('⚠️ 本批次所有追踪号都已处理过，等待下一轮')
-        // 如果所有追踪号都已处理过，等待一下再继续（给数据库时间更新）
-        await new Promise((resolve) => setTimeout(resolve, 2000))
-        continue
-      }
-
       // 处理本批次
-      const failedItems = await processBatch(newItems, stats)
+      const failedItems = await processBatch(trackingNumbers, stats)
+      totalProcessed += trackingNumbers.length
 
-      // 记录已处理的追踪号
-      newItems.forEach((item) => processedSet.add(item.search_num))
-      totalProcessed += newItems.length
-
+      const batchElapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       console.log(
-        `\n📊 第 ${batchCount} 批完成：处理 ${newItems.length} 个，成功 ${stats.success}，失败 ${failedItems.length}，跳过 ${stats.skipped}`
+        `\n📊 第 ${batchCount} 批完成：处理 ${trackingNumbers.length} 个，成功 ${stats.success}，失败 ${failedItems.length}，跳过 ${stats.skipped}（总耗时 ${batchElapsed} 秒）`
       )
 
-      // 如果本批次没有失败，说明处理顺利，可以继续下一批
-      // 如果失败数量很少，也继续处理（避免因为个别失败就停止）
-      if (failedItems.length === 0 || failedItems.length < newItems.length * 0.5) {
-        console.log(`✅ 本批次处理完成，继续下一批...`)
-      } else {
-        console.log(`⚠️ 本批次失败较多 (${failedItems.length}/${newItems.length})，将重试`)
+      // 检查是否还有时间继续处理下一批
+      if (!hasEnoughTime(startTime)) {
+        const remainingCheck = await query<{ count: number }>(`
+          SELECT COUNT(*) as count
+          FROM post_searchs
+          WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+        `)
+        const remainingCount = remainingCheck[0]?.count || 0
+        
+        console.log(`⏰ 接近超时限制，提前返回。还有约 ${remainingCount} 个待处理的追踪号`)
+        
+        return {
+          success: true,
+          message: `本轮处理完成（接近超时限制）：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`,
+          stats: {
+            total: totalProcessed,
+            success: stats.success,
+            failed: stats.failed,
+            skipped: stats.skipped,
+            retries: stats.totalRetries,
+            batches: batchCount,
+            hasMore: remainingCount > 0,
+          },
+        }
       }
 
-      // 批次间延迟，避免数据库压力过大
-      if (batchCount < MAX_BATCHES) {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
-      }
+      // 批次间短暂延迟，避免数据库压力过大
+      await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
-    console.log('\n' + '='.repeat(60))
-    console.log('📊 爬虫执行完成')
+    // 检查是否还有更多待处理的追踪号
+    const remainingCheck = await query<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM post_searchs
+      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+    `)
+    const remainingCount = remainingCheck[0]?.count || 0
+    const hasMore = remainingCount > 0
 
-    const message =
-      batchCount >= MAX_BATCHES
-        ? `爬虫执行完成（达到最大批次限制 ${MAX_BATCHES}）：总计处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
-        : `爬虫执行完成：总计处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
+    const executionTime = ((Date.now() - startTime) / 1000).toFixed(1)
+    console.log('\n' + '='.repeat(60))
+    console.log(`📊 爬虫执行完成（总耗时 ${executionTime} 秒）`)
+    
+    if (hasMore) {
+      console.log(`ℹ️ 还有约 ${remainingCount} 个待处理的追踪号，可以再次点击"更新"按钮继续处理`)
+    } else {
+      console.log('✅ 所有追踪号已处理完成')
+    }
+
+    const message = hasMore
+      ? `本轮处理完成：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
+      : `处理完成：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次。所有追踪号已处理完成`
 
     return {
       success: true,
@@ -499,6 +531,7 @@ export async function runCrawler(): Promise<{
         skipped: stats.skipped,
         retries: stats.totalRetries,
         batches: batchCount,
+        hasMore,
       },
     }
   } catch (error: any) {

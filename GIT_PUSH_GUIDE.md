@@ -703,7 +703,7 @@ git add .
 git commit -m "爬虫队列"
 
 # 推送
-git push origin main
+git push main
 
 # 拉取
 git pull origin main
