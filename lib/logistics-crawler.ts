@@ -84,39 +84,6 @@ async function bumpSearchUpdatedAt(searchNum: string): Promise<void> {
 }
 
 /**
- * 保存追踪历史记录到数据库
- */
-async function saveTrackingHistory(trackingNumber: string, data: TrackingResult): Promise<boolean> {
-  try {
-    if (!data.history || data.history.length === 0) {
-      return true
-    }
-
-    for (const history of data.history) {
-      const sql = `
-        INSERT INTO tracking_history 
-        (item_number, date, shipping_track_record, details, office, zip_code, prefecture)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-      `
-      await execute(sql, [
-        trackingNumber,
-        history.date || '',
-        history.shipping_track_record || '',
-        history.details || '',
-        history.office || '',
-        history.zip_code || '',
-        history.prefecture || '',
-      ])
-    }
-
-    return true
-  } catch (error) {
-    console.error(`保存追踪历史失败 ${trackingNumber}:`, error)
-    return false
-  }
-}
-
-/**
  * 爬取日本邮政追踪信息
  */
 async function fetchTrackingInfo(trackingNumber: string): Promise<TrackingResult | null> {
@@ -300,32 +267,24 @@ async function processTrackingNumber(
       if (result) {
         // 检查是否为 "Not registered" 情况
         if (result.isNotRegistered) {
-          // "Not registered" 是成功处理的情况
           console.log(`✅ 已处理未注册单号：${trackingNumber} (重试 ${retries} 次)`)
           return { success: true, retries }
-        } else {
-          // 正常情况：保存历史记录并更新状态
-          await saveTrackingHistory(trackingNumber, result)
-
-          // 检查最后一条记录的状态并更新（按照原 Python 逻辑）
-          if (result.history && result.history.length > 0) {
-            const lastRecord = result.history[result.history.length - 1]
-            const shippingRecord = String(lastRecord.shipping_track_record || '')
-
-            // 按照原 Python 逻辑：
-            // 1. 如果包含 "Final delivery"，设置为 "Final delivery"
-            // 2. 其他情况如实写入该值（包括 "Returned to sender" 也会如实写入）
-            if (shippingRecord.includes('Final delivery')) {
-              await updateSearchState(trackingNumber, 'Final delivery')
-            } else {
-              // 其他情况如实写入该值（包括 Returned to sender 等）
-              await updateSearchState(trackingNumber, shippingRecord)
-            }
-          }
-
-          console.log(`✅ 成功处理追踪号：${trackingNumber} (重试 ${retries} 次)`)
-          return { success: true, retries }
         }
+
+        // 正常情况：直接更新状态（不写入 tracking_history）
+        if (result.history && result.history.length > 0) {
+          const lastRecord = result.history[result.history.length - 1]
+          const shippingRecord = String(lastRecord.shipping_track_record || '')
+
+          if (shippingRecord.includes('Final delivery')) {
+            await updateSearchState(trackingNumber, 'Final delivery')
+          } else {
+            await updateSearchState(trackingNumber, shippingRecord)
+          }
+        }
+
+        console.log(`✅ 成功处理追踪号：${trackingNumber} (重试 ${retries} 次)`)
+        return { success: true, retries }
       } else {
         // 失败情况，准备重试
         retries++
