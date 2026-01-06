@@ -28,18 +28,19 @@ const SAFE_TIME_BUFFER_MS = 30000 // 安全时间缓冲 30 秒，在超时前提
 
 /**
  * 获取待查询的追踪号
+ * @param sessionStartTime 本次处理会话的开始时间，只处理 updated_at < sessionStartTime 的追踪号
  */
-async function fetchPendingSearchNumbers(): Promise<Array<{ search_num: string; states: string | null }>> {
+async function fetchPendingSearchNumbers(sessionStartTime: Date): Promise<Array<{ search_num: string; states: string | null }>> {
   try {
     const sql = `
       SELECT search_num, states
       FROM post_searchs
-      WHERE states NOT IN ('Final delivery', 'Returned to sender')
-         OR states IS NULL
+      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+        AND (updated_at IS NULL OR updated_at < $1)
       ORDER BY updated_at ASC NULLS FIRST, id ASC
       LIMIT ${BATCH_SIZE}
     `
-    const rows = await query<{ search_num: string; states: string | null }>(sql)
+    const rows = await query<{ search_num: string; states: string | null }>(sql, [sessionStartTime])
     return rows
   } catch (error) {
     console.error('获取待查询追踪号失败:', error)
@@ -67,21 +68,9 @@ async function updateSearchState(searchNum: string, newState: string): Promise<b
   }
 }
 
-// 将记录移动到队列后方（失败后更新 updated_at）
-async function bumpSearchUpdatedAt(searchNum: string): Promise<void> {
-  try {
-    await execute(
-      `
-        UPDATE post_searchs
-        SET updated_at = CURRENT_TIMESTAMP
-        WHERE search_num = $1
-      `,
-      [searchNum]
-    )
-  } catch (error) {
-    console.error(`更新重试时间失败 ${searchNum}:`, error)
-  }
-}
+// 注意：失败的追踪号不再更新 updated_at
+// 失败的追踪号保持 updated_at 不变，这样下次还能被查询到并重试
+// 只有成功处理的追踪号才会更新 updated_at（在 updateSearchState 中更新）
 
 /**
  * 爬取日本邮政追踪信息
@@ -344,11 +333,14 @@ async function processBatch(
 
     if (result.success) {
       stats.success++
+      // 只有成功处理的追踪号才更新 updated_at
+      // 失败的追踪号保持 updated_at 不变，这样下次还能被查询到并重试
     } else {
       stats.failed++
-      console.error(`❌ 追踪号 ${trackingNumber} 最终处理失败，加入重试队列`)
-      // 失败后更新时间戳，让它排到队列后面，下一次批次再尝试
-      await bumpSearchUpdatedAt(trackingNumber)
+      console.error(`❌ 追踪号 ${trackingNumber} 最终处理失败，将保留原 updated_at，下次继续重试`)
+      // 失败的追踪号不更新 updated_at，保持原样
+      // 这样它们下次还能被查询到（因为 updated_at < sessionStartTime 仍然满足）
+      // 可以继续重试，直到成功或达到最大重试次数
       failedItems.push(item)
     }
 
@@ -387,6 +379,8 @@ export async function runCrawler(): Promise<{
   }
 }> {
   const startTime = Date.now()
+  // 记录本次处理会话的开始时间，确保本次调用中每个追踪号只处理一次
+  const sessionStartTime = new Date()
   
   try {
     const stats = {
@@ -397,8 +391,10 @@ export async function runCrawler(): Promise<{
     }
     let totalProcessed = 0
     let batchCount = 0
+    const processedSet = new Set<string>() // 记录本次会话中已处理的追踪号，防止重复
 
     console.log(`📋 开始自动分批处理追踪号（每批 ${BATCH_SIZE} 个，最大执行时间 ${MAX_EXECUTION_TIME_MS / 1000} 秒）...`)
+    console.log(`📅 本次会话开始时间：${sessionStartTime.toISOString()}`)
     console.log('='.repeat(60))
 
     // 自动分批处理循环
@@ -408,8 +404,8 @@ export async function runCrawler(): Promise<{
       console.log(`\n🔄 开始处理第 ${batchCount} 批（已用时 ${elapsed} 秒）...`)
       console.log('-'.repeat(60))
 
-      // 获取待查询的追踪号（每次取 BATCH_SIZE 个，按 updated_at 排序，失败的会排在后面）
-      const trackingNumbers = await fetchPendingSearchNumbers()
+      // 获取待查询的追踪号（只处理 updated_at < sessionStartTime 的追踪号，确保本次会话中每个只处理一次）
+      const trackingNumbers = await fetchPendingSearchNumbers(sessionStartTime)
       
       console.log(`📥 获取到 ${trackingNumbers.length} 个待查询的追踪号`)
 
@@ -418,25 +414,43 @@ export async function runCrawler(): Promise<{
         break
       }
 
+      // 过滤掉本次会话中已处理的追踪号（双重保险）
+      const newItems = trackingNumbers.filter(
+        (item) => !processedSet.has(item.search_num)
+      )
+      
+      if (newItems.length === 0) {
+        console.log('⚠️ 本批次所有追踪号都已在本会话中处理过，跳过')
+        // 如果所有追踪号都已处理过，说明本次会话的所有追踪号都已处理完
+        break
+      }
+
+      console.log(`🔍 过滤后，有 ${newItems.length} 个新追踪号需要处理（已在本会话处理 ${processedSet.size} 个）`)
+
       // 处理本批次
-      const failedItems = await processBatch(trackingNumbers, stats)
-      totalProcessed += trackingNumbers.length
+      const failedItems = await processBatch(newItems, stats)
+      
+      // 记录本次会话中已处理的追踪号
+      newItems.forEach((item) => processedSet.add(item.search_num))
+      totalProcessed += newItems.length
 
       const batchElapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       console.log(
-        `\n📊 第 ${batchCount} 批完成：处理 ${trackingNumbers.length} 个，成功 ${stats.success}，失败 ${failedItems.length}，跳过 ${stats.skipped}（总耗时 ${batchElapsed} 秒）`
+        `\n📊 第 ${batchCount} 批完成：处理 ${newItems.length} 个，成功 ${stats.success}，失败 ${failedItems.length}，跳过 ${stats.skipped}（总耗时 ${batchElapsed} 秒）`
       )
 
       // 检查是否还有时间继续处理下一批
       if (!hasEnoughTime(startTime)) {
+        // 检查还有多少待处理的追踪号（updated_at < sessionStartTime，且不在已处理列表中）
         const remainingCheck = await query<{ count: number }>(`
           SELECT COUNT(*) as count
           FROM post_searchs
           WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-        `)
+            AND (updated_at IS NULL OR updated_at < $1)
+        `, [sessionStartTime])
         const remainingCount = remainingCheck[0]?.count || 0
         
-        console.log(`⏰ 接近超时限制，提前返回。还有约 ${remainingCount} 个待处理的追踪号`)
+        console.log(`⏰ 接近超时限制，提前返回。还有约 ${remainingCount} 个待处理的追踪号（updated_at < ${sessionStartTime.toISOString()}）`)
         
         return {
           success: true,
@@ -457,12 +471,13 @@ export async function runCrawler(): Promise<{
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
-    // 检查是否还有更多待处理的追踪号
+    // 检查是否还有更多待处理的追踪号（updated_at < sessionStartTime，且不在已处理列表中）
     const remainingCheck = await query<{ count: number }>(`
       SELECT COUNT(*) as count
       FROM post_searchs
       WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-    `)
+        AND (updated_at IS NULL OR updated_at < $1)
+    `, [sessionStartTime])
     const remainingCount = remainingCheck[0]?.count || 0
     const hasMore = remainingCount > 0
 
