@@ -16,6 +16,10 @@ const dbConfig = {
   max: 10, // 最大连接数
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
+  // 设置时区为中国时间（GMT+8）
+  // 如果不设置，默认使用 UTC 时间
+  // 可以通过环境变量 DB_TIMEZONE 自定义时区，默认为 'Asia/Shanghai'
+  options: `-c timezone=${process.env.DB_TIMEZONE || 'Asia/Shanghai'}`,
 }
 
 // 创建连接池
@@ -24,6 +28,18 @@ const pool = new Pool(dbConfig)
 // 处理连接错误
 pool.on('error', (err) => {
   console.error('PostgreSQL 连接池错误:', err)
+})
+
+// 在连接建立后设置时区为中国时间（GMT+8）
+// 可以通过环境变量 DB_TIMEZONE 自定义时区，默认为 'Asia/Shanghai'
+pool.on('connect', async (client) => {
+  const timezone = process.env.DB_TIMEZONE || 'Asia/Shanghai'
+  try {
+    await client.query(`SET timezone = '${timezone}'`)
+    console.log(`数据库连接时区已设置为: ${timezone}`)
+  } catch (error) {
+    console.error('设置数据库时区失败:', error)
+  }
 })
 
 /**

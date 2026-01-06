@@ -51,19 +51,61 @@ async function fetchPendingSearchNumbers(sessionStartTime: Date): Promise<Array<
 /**
  * 更新 post_searchs 表的状态
  * 按照原 Python 逻辑：更新 states 字段，同时更新 updated_at 时间戳
+ * 只要 states 有更新，updated_at 就会同时更新（通过触发器或显式设置）
  */
 async function updateSearchState(searchNum: string, newState: string): Promise<boolean> {
   try {
+    // 先查询当前状态，用于调试
+    const currentState = await query<{ states: string | null; updated_at: Date | null }>(
+      `SELECT states, updated_at FROM post_searchs WHERE search_num = $1`,
+      [searchNum]
+    )
+    
+    if (currentState.length === 0) {
+      console.warn(`⚠️ 未找到追踪号 ${searchNum}，无法更新状态`)
+      return false
+    }
+    
+    const oldState = currentState[0].states
+    const oldUpdatedAt = currentState[0].updated_at
+    
+    // 更新状态（触发器会自动更新 updated_at）
+    // 使用 (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') 确保使用中国时间
+    // 或者依赖数据库连接的时区设置
     const sql = `
       UPDATE post_searchs 
       SET states = $1, updated_at = CURRENT_TIMESTAMP
       WHERE search_num = $2
     `
-    await execute(sql, [newState, searchNum])
-    console.log(`已更新 ${searchNum} 状态为 ${newState}`)
-    return true
+    const result = await execute(sql, [newState, searchNum])
+    
+    // 检查是否真的更新了记录
+    if (result.affectedRows > 0) {
+      // 验证更新是否成功
+      const updatedState = await query<{ states: string | null; updated_at: Date | null }>(
+        `SELECT states, updated_at FROM post_searchs WHERE search_num = $1`,
+        [searchNum]
+      )
+      
+      if (updatedState.length > 0) {
+        const newStateValue = updatedState[0].states
+        const newUpdatedAt = updatedState[0].updated_at
+        
+        console.log(`✅ 已更新 ${searchNum}: states "${oldState}" -> "${newStateValue}", updated_at ${oldUpdatedAt} -> ${newUpdatedAt}`)
+        
+        // 验证 updated_at 是否真的更新了
+        if (newUpdatedAt && oldUpdatedAt && newUpdatedAt <= oldUpdatedAt) {
+          console.warn(`⚠️ 警告：${searchNum} 的 updated_at 可能没有更新（新值 ${newUpdatedAt} <= 旧值 ${oldUpdatedAt}）`)
+        }
+      }
+      
+      return true
+    } else {
+      console.warn(`⚠️ 更新 ${searchNum} 状态失败：affectedRows = 0`)
+      return false
+    }
   } catch (error) {
-    console.error(`更新状态失败 ${searchNum}:`, error)
+    console.error(`❌ 更新状态失败 ${searchNum}:`, error)
     return false
   }
 }
