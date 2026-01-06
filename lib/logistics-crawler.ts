@@ -16,6 +16,7 @@ interface TrackingHistory {
 
 interface TrackingResult {
   history: TrackingHistory[]
+  isNotRegistered?: boolean // 标记是否为 "Not registered" 情况
 }
 
 /**
@@ -119,14 +120,43 @@ async function fetchTrackingInfo(trackingNumber: string): Promise<TrackingResult
 
     const html = await response.text()
 
-    // 检查是否为未注册的单号
+    // 检查是否为未注册的单号（按照原 Python 逻辑）
+    // 原 Python 代码检查：if 'Your item was not found' in raw_html
+    // 实际错误信息格式：** Your item was not found. Confirm your item number and ask at your local office.
     if (html.includes('Your item was not found')) {
+      console.log(`❌ 发现错误：单号未找到 ${trackingNumber}`)
       await updateSearchState(trackingNumber, 'Not registered')
-      return null
+      // 返回特殊标记，表示这是 "Not registered" 情况，应该计入成功
+      return { history: [], isNotRegistered: true }
     }
 
     // 解析HTML（简化版，实际应该使用更完善的解析）
     const result = parseTrackingHTML(html)
+
+    // 如果解析后没有历史记录，可能是未找到的情况
+    // 使用 cheerio 检查表格中是否有错误信息（更精确的检查）
+    if (!result.history || result.history.length === 0) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const cheerio = require('cheerio')
+        const $ = cheerio.load(html)
+        
+        // 检查 summary="照会結果" 表格中是否包含错误信息
+        // 错误信息在：<td colspan="5"><font color="ff0000">** Your item was not found...</font></td>
+        const resultTable = $('table[summary="照会結果"]')
+        if (resultTable.length > 0) {
+          const errorText = resultTable.text()
+          if (errorText.includes('Your item was not found')) {
+            console.log(`❌ 发现错误：单号未找到（通过表格检查）${trackingNumber}`)
+            await updateSearchState(trackingNumber, 'Not registered')
+            // 返回特殊标记，表示这是 "Not registered" 情况，应该计入成功
+            return { history: [], isNotRegistered: true }
+          }
+        }
+      } catch (e) {
+        // 如果 cheerio 解析失败，忽略（可能 cheerio 未安装）
+      }
+    }
 
     return result
   } catch (error) {
@@ -228,56 +258,28 @@ function parseTrackingHTML(html: string): TrackingResult {
 }
 
 /**
- * 运行爬虫主函数
+ * 处理单个追踪号（带重试逻辑）
+ * 失败的单号会自动重试，直到成功为止（最多重试 maxRetries 次）
  */
-export async function runCrawler(): Promise<{
-  success: boolean
-  message?: string
-  error?: string
-  stats?: {
-    total: number
-    success: number
-    failed: number
-    skipped: number
-  }
-}> {
-  try {
-    // 获取待查询的追踪号
-    const trackingNumbers = await fetchPendingSearchNumbers()
+async function processTrackingNumber(
+  trackingNumber: string,
+  maxRetries: number = 50
+): Promise<{ success: boolean; retries: number }> {
+  let retries = 0
 
-    if (trackingNumbers.length === 0) {
-      return {
-        success: true,
-        message: '没有待查询的追踪号',
-        stats: {
-          total: 0,
-          success: 0,
-          failed: 0,
-          skipped: 0,
-        },
-      }
-    }
+  while (retries < maxRetries) {
+    try {
+      // 爬取追踪信息
+      const result = await fetchTrackingInfo(trackingNumber)
 
-    let success = 0
-    let failed = 0
-    let skipped = 0
-
-    for (const item of trackingNumbers) {
-      const trackingNumber = item.search_num
-      const states = item.states
-
-      // 跳过已完成的单号
-      if (states === 'Final delivery' || states === 'Returned to sender') {
-        skipped++
-        continue
-      }
-
-      try {
-        // 爬取追踪信息
-        const result = await fetchTrackingInfo(trackingNumber)
-
-        if (result) {
-          // 保存历史记录
+      if (result) {
+        // 检查是否为 "Not registered" 情况
+        if (result.isNotRegistered) {
+          // "Not registered" 是成功处理的情况
+          console.log(`✅ 已处理未注册单号：${trackingNumber} (重试 ${retries} 次)`)
+          return { success: true, retries }
+        } else {
+          // 正常情况：保存历史记录并更新状态
           await saveTrackingHistory(trackingNumber, result)
 
           // 检查最后一条记录的状态并更新（按照原 Python 逻辑）
@@ -296,28 +298,121 @@ export async function runCrawler(): Promise<{
             }
           }
 
-          success++
-        } else {
-          // 可能是未注册的单号，已经在 fetchTrackingInfo 中处理
-          failed++
+          console.log(`✅ 成功处理追踪号：${trackingNumber} (重试 ${retries} 次)`)
+          return { success: true, retries }
         }
-      } catch (error: any) {
-        console.error(`处理追踪号失败 ${trackingNumber}:`, error)
+      } else {
+        // 失败情况，准备重试
+        retries++
+        if (retries < maxRetries) {
+          console.log(`⚠️ 追踪号 ${trackingNumber} 处理失败，准备重试 (${retries}/${maxRetries})...`)
+          // 重试前等待，延迟时间逐渐增加（指数退避）
+          const delay = Math.min(1000 * Math.pow(2, retries - 1), 10000) // 最多等待10秒
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        }
+      }
+    } catch (error: any) {
+      // 异常情况，准备重试
+      retries++
+      if (retries < maxRetries) {
+        console.error(`⚠️ 处理追踪号失败 ${trackingNumber} (重试 ${retries}/${maxRetries}):`, error.message)
+        // 重试前等待，延迟时间逐渐增加（指数退避）
+        const delay = Math.min(1000 * Math.pow(2, retries - 1), 10000) // 最多等待10秒
+        await new Promise((resolve) => setTimeout(resolve, delay))
+      } else {
+        console.error(`❌ 追踪号 ${trackingNumber} 重试 ${maxRetries} 次后仍失败:`, error.message)
+        return { success: false, retries }
+      }
+    }
+  }
+
+  // 达到最大重试次数仍失败
+  console.error(`❌ 追踪号 ${trackingNumber} 达到最大重试次数 (${maxRetries}) 仍失败`)
+  return { success: false, retries }
+}
+
+/**
+ * 运行爬虫主函数（带失败重试机制）
+ */
+export async function runCrawler(): Promise<{
+  success: boolean
+  message?: string
+  error?: string
+  stats?: {
+    total: number
+    success: number
+    failed: number
+    skipped: number
+    retries: number
+  }
+}> {
+  try {
+    // 获取待查询的追踪号
+    const trackingNumbers = await fetchPendingSearchNumbers()
+
+    if (trackingNumbers.length === 0) {
+      return {
+        success: true,
+        message: '没有待查询的追踪号',
+        stats: {
+          total: 0,
+          success: 0,
+          failed: 0,
+          skipped: 0,
+          retries: 0,
+        },
+      }
+    }
+
+    let success = 0
+    let failed = 0
+    let skipped = 0
+    let totalRetries = 0
+
+    console.log(`📋 开始处理 ${trackingNumbers.length} 个追踪号...`)
+    console.log('='.repeat(60))
+
+    for (const item of trackingNumbers) {
+      const trackingNumber = item.search_num
+      const states = item.states
+
+      // 跳过已完成的单号
+      if (states === 'Final delivery' || states === 'Returned to sender') {
+        skipped++
+        console.log(`⏭️ 跳过已完成单号：${trackingNumber} (状态: ${states})`)
+        continue
+      }
+
+      console.log(`\n正在处理追踪号：${trackingNumber}`)
+      console.log('-'.repeat(50))
+
+      // 处理追踪号（带重试逻辑，最多重试50次，基本可以覆盖大部分临时故障）
+      const result = await processTrackingNumber(trackingNumber, 50)
+      totalRetries += result.retries
+
+      if (result.success) {
+        success++
+      } else {
         failed++
+        console.error(`❌ 追踪号 ${trackingNumber} 最终处理失败`)
       }
 
       // 添加延迟，避免请求过快
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
+    console.log('\n' + '='.repeat(60))
+    console.log('📊 爬虫执行完成')
+
     return {
       success: true,
-      message: `爬虫执行完成：总计 ${trackingNumbers.length} 个，成功 ${success} 个，失败 ${failed} 个，跳过 ${skipped} 个`,
+      message: `爬虫执行完成：总计 ${trackingNumbers.length} 个，成功 ${success} 个，失败 ${failed} 个，跳过 ${skipped} 个，总重试 ${totalRetries} 次`,
       stats: {
         total: trackingNumbers.length,
         success,
         failed,
         skipped,
+        retries: totalRetries,
       },
     }
   } catch (error: any) {
