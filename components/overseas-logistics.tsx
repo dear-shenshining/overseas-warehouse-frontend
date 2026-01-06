@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useTransition, useRef } from "react"
+import { useState, useEffect, useTransition, useRef, forwardRef, useImperativeHandle } from "react"
 import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,7 +19,16 @@ import type { LogisticsRecord } from "@/lib/logistics-data"
 import { getStatusLabel } from "@/lib/status-mapping"
 import * as XLSX from "xlsx"
 
-export default function OverseasLogistics() {
+interface OverseasLogisticsProps {
+  onLastUpdateTimeChange?: (time: Date | null) => void
+}
+
+export interface OverseasLogisticsRef {
+  handleUpdate: () => void
+}
+
+const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProps>(
+  ({ onLastUpdateTimeChange }, ref) => {
   const [searchQuery, setSearchQuery] = useState("")
   const [logisticsData, setLogisticsData] = useState<LogisticsRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -35,6 +44,7 @@ export default function OverseasLogistics() {
   const [currentPage, setCurrentPage] = useState(1)
   const [importing, setImporting] = useState(false)
   const [updating, setUpdating] = useState(false)
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null)
   const [importResult, setImportResult] = useState<{
     success: boolean
     message?: string
@@ -151,8 +161,8 @@ export default function OverseasLogistics() {
 
       setImportResult({
         success: result.success,
-        message: result.message,
-        error: result.error,
+        message: 'message' in result ? result.message : undefined,
+        error: 'error' in result ? result.error : undefined,
       })
 
       // 导入成功后，刷新数据
@@ -179,6 +189,8 @@ export default function OverseasLogistics() {
   const handleUpdate = async () => {
     setUpdating(true)
     setUpdateResult(null)
+    // 爬虫运行中，隐藏最后更新时间
+    onLastUpdateTimeChange?.(null)
 
     let totalProcessed = 0
     let totalSuccess = 0
@@ -203,10 +215,12 @@ export default function OverseasLogistics() {
 
         if (!result.success) {
           // 如果出错，停止递归
+          const completionTime = new Date()
+          setLastUpdateTime(completionTime)
+          onLastUpdateTimeChange?.(completionTime)
           setUpdateResult({
             success: false,
-            message: result.error || '更新失败',
-            error: result.error,
+            error: result.error || '更新失败',
           })
           break
         }
@@ -214,7 +228,7 @@ export default function OverseasLogistics() {
         // 累计统计信息
         // 注意：result.stats 是本轮的统计，直接使用，不要累加
         // 因为后端的 stats 已经是累计值（在整个会话中累计）
-        if (result.stats) {
+        if (result.success && 'stats' in result && result.stats) {
           // 每轮返回的 total 是累计值，所以直接使用最新的值，不要累加
           totalProcessed = result.stats.total || 0
           totalSuccess = result.stats.success || 0
@@ -225,7 +239,7 @@ export default function OverseasLogistics() {
         }
 
         // 更新 UI 显示当前进度
-        const currentMessage = result.stats?.hasMore
+        const currentMessage = result.success && 'stats' in result && result.stats?.hasMore
           ? `正在处理中...（第 ${roundCount} 轮，已处理 ${totalProcessed} 个，还有待处理）`
           : `处理完成！总计处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个，总重试 ${totalRetries} 次，共 ${totalBatches} 个批次`
         
@@ -235,12 +249,15 @@ export default function OverseasLogistics() {
         })
 
         // 如果还有待处理的追踪号，继续下一轮
-        if (result.stats?.hasMore) {
+        if (result.success && 'stats' in result && result.stats && result.stats.hasMore) {
           console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${roundCount + 1} 轮...`)
           // 短暂延迟后继续下一轮（使用 setTimeout 确保不阻塞UI）
           await new Promise((resolve) => setTimeout(resolve, 1000))
         } else {
           // 全部处理完成
+          const completionTime = new Date()
+          setLastUpdateTime(completionTime)
+          onLastUpdateTimeChange?.(completionTime)
           setUpdateResult({
             success: true,
             message: `✅ 全部处理完成！总计处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个，总重试 ${totalRetries} 次，共 ${totalBatches} 个批次，执行了 ${roundCount} 轮`,
@@ -251,6 +268,9 @@ export default function OverseasLogistics() {
 
       // 如果达到最大轮数，提示用户
       if (roundCount >= MAX_ROUNDS) {
+        const completionTime = new Date()
+        setLastUpdateTime(completionTime)
+        onLastUpdateTimeChange?.(completionTime)
         setUpdateResult({
           success: true,
           message: `⚠️ 已达到最大处理轮数（${MAX_ROUNDS} 轮）。已处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个。如果还有待处理的追踪号，请稍后再次点击"更新"按钮`,
@@ -362,15 +382,6 @@ export default function OverseasLogistics() {
               {importing ? '导入中...' : '导入数据'}
             </Button>
           </div>
-          <Button 
-            variant="outline" 
-            className="gap-2" 
-            onClick={handleUpdate}
-            disabled={updating}
-          >
-            <RefreshCw className={`h-4 w-4 ${updating ? 'animate-spin' : ''}`} />
-            {updating ? '更新中...' : '更新'}
-          </Button>
         </div>
       </Card>
 
@@ -697,4 +708,8 @@ export default function OverseasLogistics() {
       </Card>
     </div>
   )
-}
+})
+
+OverseasLogistics.displayName = 'OverseasLogistics'
+
+export default OverseasLogistics

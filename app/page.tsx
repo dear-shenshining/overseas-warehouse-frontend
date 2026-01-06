@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
+import { useState, useEffect, useTransition, useRef } from "react"
 import { Package, TrendingUp, Menu, X, Warehouse, ChevronRight, BarChart3, Clock, History, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -25,6 +25,26 @@ export default function LogisticsPage() {
   const [isRefreshing, startRefresh] = useTransition()
   const [chargeList, setChargeList] = useState<string[]>([])
   const [selectedCharge, setSelectedCharge] = useState<string>("")
+  // 从 localStorage 读取最后更新时间，实现持久化存储
+  const [overseasLastUpdateTime, setOverseasLastUpdateTime] = useState<Date | null>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('overseas_last_update_time')
+      return stored ? new Date(stored) : null
+    }
+    return null
+  })
+  const [overseasUpdating, setOverseasUpdating] = useState(false)
+  const overseasLogisticsRef = useRef<{ handleUpdate: () => void } | null>(null)
+  
+  // 当更新时间变化时，同步到 localStorage
+  useEffect(() => {
+    if (overseasLastUpdateTime) {
+      localStorage.setItem('overseas_last_update_time', overseasLastUpdateTime.toISOString())
+    } else {
+      // 如果设置为 null（爬虫运行中），不清除 localStorage，保持上次的时间
+      // 这样即使刷新页面，也能看到上次的更新时间
+    }
+  }, [overseasLastUpdateTime])
 
   // 加载负责人列表（只在任务及时限页面加载）
   useEffect(() => {
@@ -164,6 +184,37 @@ export default function LogisticsPage() {
                   : "滞销库存管理 - 历史任务"
                 : "日利润报表"}
             </h2>
+            {activePage === "overseas" && (
+              <div className="flex items-center gap-3 ml-auto">
+                {overseasLastUpdateTime && !overseasUpdating && (
+                  <span className="text-sm text-muted-foreground">
+                    最新更新时间：{overseasLastUpdateTime.toLocaleString('zh-CN', { 
+                      year: 'numeric', 
+                      month: '2-digit', 
+                      day: '2-digit', 
+                      hour: '2-digit', 
+                      minute: '2-digit', 
+                      second: '2-digit',
+                      hour12: false 
+                    })}
+                  </span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    // 触发子组件的更新函数
+                    if (overseasLogisticsRef.current) {
+                      overseasLogisticsRef.current.handleUpdate()
+                    }
+                  }}
+                  disabled={overseasUpdating}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${overseasUpdating ? 'animate-spin' : ''}`} />
+                  {overseasUpdating ? '运行中...' : '运行爬虫'}
+                </Button>
+              </div>
+            )}
             {activePage === "inventory" && inventorySubMenu === "overview" && (
               <Button
                 variant="outline"
@@ -213,7 +264,13 @@ export default function LogisticsPage() {
         {/* Page Content */}
         <main className="flex-1 overflow-hidden p-6">
           {activePage === "overseas" ? (
-            <OverseasLogistics />
+            <OverseasLogistics 
+              ref={overseasLogisticsRef}
+              onLastUpdateTimeChange={(time) => {
+                setOverseasLastUpdateTime(time)
+                setOverseasUpdating(time === null)
+              }}
+            />
           ) : activePage === "inventory" ? (
             inventorySubMenu === "overview" ? (
               <SlowMovingInventory />

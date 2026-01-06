@@ -700,10 +700,11 @@ git branch
 git add .
 
 # 提交
-git commit -m "时区改为中国 更新时间脚本开启"
+git commit -m "修改时区带来的比较问题2.0"
 
 # 推送
 git push main
+git push origin main
 
 # 拉取
 git pull origin main
