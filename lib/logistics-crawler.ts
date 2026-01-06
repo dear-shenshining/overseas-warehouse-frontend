@@ -32,17 +32,42 @@ const SAFE_TIME_BUFFER_MS = 30000 // 安全时间缓冲 30 秒，在超时前提
  */
 async function fetchPendingSearchNumbers(sessionStartTime: Date): Promise<Array<{ search_num: string; states: string | null }>> {
   try {
-    // 使用传入的 sessionStartTime（从数据库获取），确保时区一致性
-    // 这样可以避免 JavaScript Date 对象和数据库时区不一致的问题
+    // 先检查不限制 updated_at 时有多少条
+    const allCheck = await query<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM post_searchs
+      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+    `)
+    const allCount = allCheck[0]?.count || 0
+    
+    // 检查限制 updated_at 时有多少条
+    const filteredCheck = await query<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM post_searchs
+      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+        AND (updated_at IS NULL OR updated_at < $1)
+    `, [sessionStartTime])
+    const filteredCount = filteredCheck[0]?.count || 0
+    
+    console.log(`🔍 查询调试：不限制 updated_at 有 ${allCount} 条，限制 updated_at < ${sessionStartTime.toISOString()} 有 ${filteredCount} 条`)
+    
+    // 关键修复：直接在 SQL 中使用 NOW() 进行比较，避免时区转换问题
+    // 因为数据库连接已设置时区为 Asia/Shanghai，NOW() 会使用该时区
+    // 而 updated_at 字段也应该是相同时区，所以直接比较即可
     const sql = `
       SELECT search_num, states
       FROM post_searchs
       WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-        AND (updated_at IS NULL OR updated_at < $1)
+        AND (updated_at IS NULL OR updated_at < NOW())
       ORDER BY updated_at ASC NULLS FIRST, id ASC
       LIMIT ${BATCH_SIZE}
     `
-    const rows = await query<{ search_num: string; states: string | null }>(sql, [sessionStartTime])
+    const params: any[] = []
+    
+    console.log(`✅ 使用 NOW() 进行时间比较（数据库时区：Asia/Shanghai）`)
+    
+    const rows = await query<{ search_num: string; states: string | null }>(sql, params)
+    console.log(`✅ 实际查询到 ${rows.length} 条追踪号`)
     return rows
   } catch (error) {
     console.error('获取待查询追踪号失败:', error)
@@ -452,10 +477,23 @@ export async function runCrawler(): Promise<{
 }> {
   const startTime = Date.now()
   // 记录本次处理会话的开始时间，确保本次调用中每个追踪号只处理一次
-  // 关键修复：从数据库获取当前时间，确保时区一致性
-  // 因为数据库连接已设置时区为 Asia/Shanghai，使用数据库的 NOW() 可以避免时区问题
-  const sessionTimeResult = await query<{ now: Date }>(`SELECT NOW() as now`)
-  const sessionStartTime = sessionTimeResult[0]?.now || new Date()
+  // 关键修复：不再使用 sessionStartTime，而是直接在 SQL 中使用 NOW()
+  // 这样可以避免时区转换问题，因为：
+  // 1. 数据库连接已设置时区为 Asia/Shanghai
+  // 2. NOW() 会使用该时区
+  // 3. updated_at 字段也应该是相同时区
+  // 4. 直接比较就不会有时区问题
+  
+  // 获取当前时间用于日志显示（不用于查询）
+  const sessionTimeResult = await query<{ now: string; timezone: string }>(`
+    SELECT NOW()::text as now,
+           current_setting('timezone') as timezone
+  `)
+  const sessionStartTimeStr = sessionTimeResult[0]?.now || new Date().toISOString()
+  
+  console.log(`📅 数据库当前时间：${sessionTimeResult[0]?.now}`)
+  console.log(`📅 数据库时区设置：${sessionTimeResult[0]?.timezone}`)
+  console.log(`ℹ️ 注意：所有时间比较都使用 NOW()，不再使用 sessionStartTime 参数，避免时区问题`)
   
   try {
     const stats = {
@@ -469,7 +507,7 @@ export async function runCrawler(): Promise<{
     const processedSet = new Set<string>() // 记录本次会话中已处理的追踪号，防止重复
 
     console.log(`📋 开始自动分批处理追踪号（每批 ${BATCH_SIZE} 个，最大执行时间 ${MAX_EXECUTION_TIME_MS / 1000} 秒）...`)
-    console.log(`📅 本次会话开始时间：${sessionStartTime.toISOString()}`)
+    console.log(`📅 本次会话开始时间：${sessionStartTimeStr}`)
     
     // 先检查数据库中有多少待处理的追踪号
     const totalCheck = await query<{ count: number }>(`
@@ -479,15 +517,16 @@ export async function runCrawler(): Promise<{
     `)
     const totalPending = totalCheck[0]?.count || 0
     
+    // 使用 NOW() 而不是 sessionStartTime，避免时区问题
     const eligibleCheck = await query<{ count: number }>(`
       SELECT COUNT(*) as count
       FROM post_searchs
       WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-        AND (updated_at IS NULL OR updated_at < $1)
-    `, [sessionStartTime])
+        AND (updated_at IS NULL OR updated_at < NOW())
+    `)
     const eligiblePending = eligibleCheck[0]?.count || 0
     
-    console.log(`📊 数据库统计：总共 ${totalPending} 个待处理追踪号，其中 ${eligiblePending} 个符合本次会话条件（updated_at < ${sessionStartTime.toISOString()}）`)
+    console.log(`📊 数据库统计：总共 ${totalPending} 个待处理追踪号，其中 ${eligiblePending} 个符合本次会话条件（updated_at < NOW()）`)
     console.log('='.repeat(60))
 
     // 自动分批处理循环
@@ -497,8 +536,9 @@ export async function runCrawler(): Promise<{
       console.log(`\n🔄 开始处理第 ${batchCount} 批（已用时 ${elapsed} 秒）...`)
       console.log('-'.repeat(60))
 
-      // 获取待查询的追踪号（只处理 updated_at < sessionStartTime 的追踪号，确保本次会话中每个只处理一次）
-      const trackingNumbers = await fetchPendingSearchNumbers(sessionStartTime)
+      // 获取待查询的追踪号（使用 NOW() 进行比较，避免时区问题）
+      // 注意：fetchPendingSearchNumbers 现在内部使用 NOW()，不再需要 sessionStartTime 参数
+      const trackingNumbers = await fetchPendingSearchNumbers(new Date())
       
       console.log(`📥 获取到 ${trackingNumbers.length} 个待查询的追踪号`)
 
@@ -522,9 +562,9 @@ export async function runCrawler(): Promise<{
           SELECT COUNT(*) as count
           FROM post_searchs
           WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-            AND (updated_at IS NULL OR updated_at < $1)
-            AND search_num != ALL($2::text[])
-        `, [sessionStartTime, processedArray])
+            AND (updated_at IS NULL OR updated_at < NOW())
+            AND search_num != ALL($1::text[])
+        `, [processedArray])
         const remainingCount = remainingCheck[0]?.count || 0
         
         if (remainingCount === 0) {
@@ -565,9 +605,9 @@ export async function runCrawler(): Promise<{
           SELECT COUNT(*) as count
           FROM post_searchs
           WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-            AND (updated_at IS NULL OR updated_at < $1)
-            AND search_num != ALL($2::text[])
-        `, [sessionStartTime, processedArray])
+            AND (updated_at IS NULL OR updated_at < NOW())
+            AND search_num != ALL($1::text[])
+        `, [processedArray])
         const remainingCount = remainingCheck[0]?.count || 0
         
         console.log(`⏰ 接近超时限制，提前返回。还有约 ${remainingCount} 个待处理的追踪号（已在本会话处理 ${processedSet.size} 个）`)
@@ -596,24 +636,24 @@ export async function runCrawler(): Promise<{
     // 如果所有待处理的追踪号都已经在本会话中处理过，hasMore = false
     let remainingCount = 0
     if (processedSet.size > 0) {
-      // 使用 ANY 数组查询，避免 SQL 注入和参数过多的问题
+      // 使用 NOW() 而不是 sessionStartTime，避免时区问题
       const processedArray = Array.from(processedSet)
       const remainingCheck = await query<{ count: number }>(`
         SELECT COUNT(*) as count
         FROM post_searchs
         WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-          AND (updated_at IS NULL OR updated_at < $1)
-          AND search_num != ALL($2::text[])
-      `, [sessionStartTime, processedArray])
+          AND (updated_at IS NULL OR updated_at < NOW())
+          AND search_num != ALL($1::text[])
+      `, [processedArray])
       remainingCount = remainingCheck[0]?.count || 0
     } else {
-      // 如果没有处理过任何追踪号，检查所有待处理的
+      // 如果没有处理过任何追踪号，检查所有待处理的（使用 NOW()）
       const remainingCheck = await query<{ count: number }>(`
         SELECT COUNT(*) as count
         FROM post_searchs
         WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-          AND (updated_at IS NULL OR updated_at < $1)
-      `, [sessionStartTime])
+          AND (updated_at IS NULL OR updated_at < NOW())
+      `)
       remainingCount = remainingCheck[0]?.count || 0
     }
     const hasMore = remainingCount > 0
