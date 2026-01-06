@@ -208,13 +208,16 @@ export default function OverseasLogistics() {
         }
 
         // 累计统计信息
+        // 注意：result.stats 是本轮的统计，直接使用，不要累加
+        // 因为后端的 stats 已经是累计值（在整个会话中累计）
         if (result.stats) {
-          totalProcessed += result.stats.total || 0
-          totalSuccess += result.stats.success || 0
-          totalFailed += result.stats.failed || 0
-          totalSkipped += result.stats.skipped || 0
-          totalRetries += result.stats.retries || 0
-          totalBatches += result.stats.batches || 0
+          // 每轮返回的 total 是累计值，所以直接使用最新的值，不要累加
+          totalProcessed = result.stats.total || 0
+          totalSuccess = result.stats.success || 0
+          totalFailed = result.stats.failed || 0
+          totalSkipped = result.stats.skipped || 0
+          totalRetries = result.stats.retries || 0
+          totalBatches = result.stats.batches || 0
         }
 
         // 更新 UI 显示当前进度

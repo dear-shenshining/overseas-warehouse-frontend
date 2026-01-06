@@ -700,7 +700,7 @@ git branch
 git add .
 
 # 提交
-git commit -m "爬虫递归，并且删掉一个历史表"
+git commit -m "爬虫递归不重复不遗漏"
 
 # 推送
 git push main

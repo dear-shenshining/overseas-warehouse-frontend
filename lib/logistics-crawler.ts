@@ -105,7 +105,7 @@ async function fetchTrackingInfo(trackingNumber: string): Promise<TrackingResult
     // 原 Python 代码检查：if 'Your item was not found' in raw_html
     // 实际错误信息格式：** Your item was not found. Confirm your item number and ask at your local office.
     if (html.includes('Your item was not found')) {
-      console.log(`❌ 发现错误：单号未找到 ${trackingNumber}`)
+      console.log(`单号未找到 ${trackingNumber}`)
       await updateSearchState(trackingNumber, 'Not registered')
       // 返回特殊标记，表示这是 "Not registered" 情况，应该计入成功
       return { history: [], isNotRegistered: true }
@@ -128,7 +128,7 @@ async function fetchTrackingInfo(trackingNumber: string): Promise<TrackingResult
         if (resultTable.length > 0) {
           const errorText = resultTable.text()
           if (errorText.includes('Your item was not found')) {
-            console.log(`❌ 发现错误：单号未找到（通过表格检查）${trackingNumber}`)
+            console.log(`单号未找到（通过表格检查）${trackingNumber}`)
             await updateSearchState(trackingNumber, 'Not registered')
             // 返回特殊标记，表示这是 "Not registered" 情况，应该计入成功
             return { history: [], isNotRegistered: true }
@@ -256,24 +256,52 @@ async function processTrackingNumber(
       if (result) {
         // 检查是否为 "Not registered" 情况
         if (result.isNotRegistered) {
+          // "Not registered" 已经更新了 states，所以 updated_at 也已经更新
           console.log(`✅ 已处理未注册单号：${trackingNumber} (重试 ${retries} 次)`)
           return { success: true, retries }
         }
 
-        // 正常情况：直接更新状态（不写入 tracking_history）
+        // 正常情况：更新状态（会同时更新 updated_at）
+        // 只要 states 有更新，updated_at 就会在 updateSearchState 中被更新
+        let stateUpdated = false
         if (result.history && result.history.length > 0) {
           const lastRecord = result.history[result.history.length - 1]
           const shippingRecord = String(lastRecord.shipping_track_record || '')
 
           if (shippingRecord.includes('Final delivery')) {
-            await updateSearchState(trackingNumber, 'Final delivery')
+            stateUpdated = await updateSearchState(trackingNumber, 'Final delivery')
           } else {
-            await updateSearchState(trackingNumber, shippingRecord)
+            stateUpdated = await updateSearchState(trackingNumber, shippingRecord)
           }
+        } else {
+          // 如果没有历史记录，可能是查询成功但没有追踪信息
+          // 这种情况下不更新 states，也不更新 updated_at，保持原样以便重试
+          console.log(`⚠️ 追踪号 ${trackingNumber} 查询成功但没有历史记录，将保留原 updated_at，下次继续重试`)
+          retries++
+          if (retries < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, retries - 1), MAX_RETRY_DELAY_MS)
+            await new Promise((resolve) => setTimeout(resolve, delay))
+          } else {
+            return { success: false, retries }
+          }
+          continue // 继续重试循环
         }
 
-        console.log(`✅ 成功处理追踪号：${trackingNumber} (重试 ${retries} 次)`)
-        return { success: true, retries }
+        // 只要 states 有更新，updated_at 就已经被更新了（在 updateSearchState 中）
+        if (stateUpdated) {
+          console.log(`✅ 成功处理追踪号：${trackingNumber} (重试 ${retries} 次，已更新 states 和 updated_at)`)
+          return { success: true, retries }
+        } else {
+          // 如果更新失败（数据库错误等），不更新 updated_at，保持原样以便重试
+          console.log(`⚠️ 追踪号 ${trackingNumber} 查询成功但更新 states 失败，将保留原 updated_at，下次继续重试`)
+          retries++
+          if (retries < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, retries - 1), MAX_RETRY_DELAY_MS)
+            await new Promise((resolve) => setTimeout(resolve, delay))
+          } else {
+            return { success: false, retries }
+          }
+        }
       } else {
         // 失败情况，准备重试
         retries++
@@ -422,7 +450,26 @@ export async function runCrawler(): Promise<{
       if (newItems.length === 0) {
         console.log('⚠️ 本批次所有追踪号都已在本会话中处理过，跳过')
         // 如果所有追踪号都已处理过，说明本次会话的所有追踪号都已处理完
-        break
+        // 检查是否还有新的追踪号（不在 processedSet 中的）
+        const processedArray = Array.from(processedSet)
+        const remainingCheck = await query<{ count: number }>(`
+          SELECT COUNT(*) as count
+          FROM post_searchs
+          WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+            AND (updated_at IS NULL OR updated_at < $1)
+            AND search_num != ALL($2::text[])
+        `, [sessionStartTime, processedArray])
+        const remainingCount = remainingCheck[0]?.count || 0
+        
+        if (remainingCount === 0) {
+          console.log('✅ 本次会话的所有追踪号都已处理完成')
+          break
+        } else {
+          console.log(`ℹ️ 还有 ${remainingCount} 个新的追踪号待处理，继续下一批...`)
+          // 继续循环，尝试获取新的追踪号
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+          continue
+        }
       }
 
       console.log(`🔍 过滤后，有 ${newItems.length} 个新追踪号需要处理（已在本会话处理 ${processedSet.size} 个）`)
@@ -430,9 +477,13 @@ export async function runCrawler(): Promise<{
       // 处理本批次
       const failedItems = await processBatch(newItems, stats)
       
-      // 记录本次会话中已处理的追踪号
+      // 记录本次会话中已处理的追踪号（包括跳过的）
       newItems.forEach((item) => processedSet.add(item.search_num))
-      totalProcessed += newItems.length
+      
+      // 只统计实际处理的追踪号（成功 + 失败），不包括跳过的
+      // stats.success + stats.failed 才是实际处理的追踪号数量
+      const actuallyProcessed = stats.success + stats.failed
+      totalProcessed = actuallyProcessed
 
       const batchElapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       console.log(
@@ -441,16 +492,19 @@ export async function runCrawler(): Promise<{
 
       // 检查是否还有时间继续处理下一批
       if (!hasEnoughTime(startTime)) {
-        // 检查还有多少待处理的追踪号（updated_at < sessionStartTime，且不在已处理列表中）
+        // 检查还有多少待处理的追踪号（updated_at < sessionStartTime）
+        // 但是要排除已经在本次会话中处理过的（即使失败了，也已经尝试过了）
+        const processedArray = Array.from(processedSet)
         const remainingCheck = await query<{ count: number }>(`
           SELECT COUNT(*) as count
           FROM post_searchs
           WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
             AND (updated_at IS NULL OR updated_at < $1)
-        `, [sessionStartTime])
+            AND search_num != ALL($2::text[])
+        `, [sessionStartTime, processedArray])
         const remainingCount = remainingCheck[0]?.count || 0
         
-        console.log(`⏰ 接近超时限制，提前返回。还有约 ${remainingCount} 个待处理的追踪号（updated_at < ${sessionStartTime.toISOString()}）`)
+        console.log(`⏰ 接近超时限制，提前返回。还有约 ${remainingCount} 个待处理的追踪号（已在本会话处理 ${processedSet.size} 个）`)
         
         return {
           success: true,
@@ -471,15 +525,34 @@ export async function runCrawler(): Promise<{
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
-    // 检查是否还有更多待处理的追踪号（updated_at < sessionStartTime，且不在已处理列表中）
-    const remainingCheck = await query<{ count: number }>(`
-      SELECT COUNT(*) as count
-      FROM post_searchs
-      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-        AND (updated_at IS NULL OR updated_at < $1)
-    `, [sessionStartTime])
-    const remainingCount = remainingCheck[0]?.count || 0
+    // 检查是否还有更多待处理的追踪号
+    // 关键：排除已经在本次会话中处理过的追踪号（即使失败了，也已经尝试过了）
+    // 如果所有待处理的追踪号都已经在本会话中处理过，hasMore = false
+    let remainingCount = 0
+    if (processedSet.size > 0) {
+      // 使用 ANY 数组查询，避免 SQL 注入和参数过多的问题
+      const processedArray = Array.from(processedSet)
+      const remainingCheck = await query<{ count: number }>(`
+        SELECT COUNT(*) as count
+        FROM post_searchs
+        WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+          AND (updated_at IS NULL OR updated_at < $1)
+          AND search_num != ALL($2::text[])
+      `, [sessionStartTime, processedArray])
+      remainingCount = remainingCheck[0]?.count || 0
+    } else {
+      // 如果没有处理过任何追踪号，检查所有待处理的
+      const remainingCheck = await query<{ count: number }>(`
+        SELECT COUNT(*) as count
+        FROM post_searchs
+        WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+          AND (updated_at IS NULL OR updated_at < $1)
+      `, [sessionStartTime])
+      remainingCount = remainingCheck[0]?.count || 0
+    }
     const hasMore = remainingCount > 0
+    
+    console.log(`📊 统计：已在本会话处理 ${processedSet.size} 个，还有 ${remainingCount} 个新的待处理追踪号`)
 
     const executionTime = ((Date.now() - startTime) / 1000).toFixed(1)
     console.log('\n' + '='.repeat(60))
