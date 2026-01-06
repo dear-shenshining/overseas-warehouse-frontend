@@ -19,6 +19,11 @@ interface TrackingResult {
   isNotRegistered?: boolean // 标记是否为 "Not registered" 情况
 }
 
+// 批处理大小与重试策略（控制单次任务时长，避免 Vercel 300s 超时）
+const BATCH_SIZE = 50
+const MAX_RETRIES = 5
+const MAX_RETRY_DELAY_MS = 3000 // 单次重试最大等待 3s（指数退避上限）
+
 /**
  * 获取待查询的追踪号
  */
@@ -29,6 +34,8 @@ async function fetchPendingSearchNumbers(): Promise<Array<{ search_num: string; 
       FROM post_searchs
       WHERE states NOT IN ('Final delivery', 'Returned to sender')
          OR states IS NULL
+      ORDER BY updated_at ASC NULLS FIRST, id ASC
+      LIMIT ${BATCH_SIZE}
     `
     const rows = await query<{ search_num: string; states: string | null }>(sql)
     return rows
@@ -55,6 +62,22 @@ async function updateSearchState(searchNum: string, newState: string): Promise<b
   } catch (error) {
     console.error(`更新状态失败 ${searchNum}:`, error)
     return false
+  }
+}
+
+// 将记录移动到队列后方（失败后更新 updated_at）
+async function bumpSearchUpdatedAt(searchNum: string): Promise<void> {
+  try {
+    await execute(
+      `
+        UPDATE post_searchs
+        SET updated_at = CURRENT_TIMESTAMP
+        WHERE search_num = $1
+      `,
+      [searchNum]
+    )
+  } catch (error) {
+    console.error(`更新重试时间失败 ${searchNum}:`, error)
   }
 }
 
@@ -263,7 +286,7 @@ function parseTrackingHTML(html: string): TrackingResult {
  */
 async function processTrackingNumber(
   trackingNumber: string,
-  maxRetries: number = 50
+  maxRetries: number = MAX_RETRIES
 ): Promise<{ success: boolean; retries: number }> {
   let retries = 0
 
@@ -307,7 +330,7 @@ async function processTrackingNumber(
         if (retries < maxRetries) {
           console.log(`⚠️ 追踪号 ${trackingNumber} 处理失败，准备重试 (${retries}/${maxRetries})...`)
           // 重试前等待，延迟时间逐渐增加（指数退避）
-          const delay = Math.min(1000 * Math.pow(2, retries - 1), 10000) // 最多等待10秒
+          const delay = Math.min(1000 * Math.pow(2, retries - 1), MAX_RETRY_DELAY_MS)
           await new Promise((resolve) => setTimeout(resolve, delay))
         }
       }
@@ -317,7 +340,7 @@ async function processTrackingNumber(
       if (retries < maxRetries) {
         console.error(`⚠️ 处理追踪号失败 ${trackingNumber} (重试 ${retries}/${maxRetries}):`, error.message)
         // 重试前等待，延迟时间逐渐增加（指数退避）
-        const delay = Math.min(1000 * Math.pow(2, retries - 1), 10000) // 最多等待10秒
+        const delay = Math.min(1000 * Math.pow(2, retries - 1), MAX_RETRY_DELAY_MS)
         await new Promise((resolve) => setTimeout(resolve, delay))
       } else {
         console.error(`❌ 追踪号 ${trackingNumber} 重试 ${maxRetries} 次后仍失败:`, error.message)
@@ -332,7 +355,52 @@ async function processTrackingNumber(
 }
 
 /**
- * 运行爬虫主函数（带失败重试机制）
+ * 处理一批追踪号（最多 BATCH_SIZE 个）
+ */
+async function processBatch(
+  batch: Array<{ search_num: string; states: string | null }>,
+  stats: { success: number; failed: number; skipped: number; totalRetries: number }
+): Promise<Array<{ search_num: string; states: string | null }>> {
+  const failedItems: Array<{ search_num: string; states: string | null }> = []
+
+  for (const item of batch) {
+    const trackingNumber = item.search_num
+    const states = item.states
+
+    // 跳过已完成的单号
+    if (states === 'Final delivery' || states === 'Returned to sender') {
+      stats.skipped++
+      console.log(`⏭️ 跳过已完成单号：${trackingNumber} (状态: ${states})`)
+      continue
+    }
+
+    console.log(`\n正在处理追踪号：${trackingNumber}`)
+    console.log('-'.repeat(50))
+
+    // 处理追踪号（带重试逻辑，最多重试 MAX_RETRIES 次）
+    const result = await processTrackingNumber(trackingNumber)
+    stats.totalRetries += result.retries
+
+    if (result.success) {
+      stats.success++
+    } else {
+      stats.failed++
+      console.error(`❌ 追踪号 ${trackingNumber} 最终处理失败，加入重试队列`)
+      // 失败后更新时间戳，让它排到队列后面，下一次批次再尝试
+      await bumpSearchUpdatedAt(trackingNumber)
+      failedItems.push(item)
+    }
+
+    // 添加延迟，避免请求过快
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+
+  return failedItems
+}
+
+/**
+ * 运行爬虫主函数（分批处理机制，避免超时）
+ * 每次处理 50 个，失败的加入队列后面继续处理
  */
 export async function runCrawler(): Promise<{
   success: boolean
@@ -344,75 +412,93 @@ export async function runCrawler(): Promise<{
     failed: number
     skipped: number
     retries: number
+    batches: number
   }
 }> {
   try {
-    // 获取待查询的追踪号
-    const trackingNumbers = await fetchPendingSearchNumbers()
-
-    if (trackingNumbers.length === 0) {
-      return {
-        success: true,
-        message: '没有待查询的追踪号',
-        stats: {
-          total: 0,
-          success: 0,
-          failed: 0,
-          skipped: 0,
-          retries: 0,
-        },
-      }
+    const MAX_BATCHES = 10 // 最多处理 10 个批次，避免无限循环（10 * 50 = 500 个）
+    const stats = {
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      totalRetries: 0,
     }
+    let totalProcessed = 0
+    let batchCount = 0
+    const processedSet = new Set<string>() // 记录已处理的追踪号，避免重复处理
 
-    let success = 0
-    let failed = 0
-    let skipped = 0
-    let totalRetries = 0
-
-    console.log(`📋 开始处理 ${trackingNumbers.length} 个追踪号...`)
+    console.log(`📋 开始分批处理追踪号（每批 ${BATCH_SIZE} 个，最多 ${MAX_BATCHES} 批）...`)
     console.log('='.repeat(60))
 
-    for (const item of trackingNumbers) {
-      const trackingNumber = item.search_num
-      const states = item.states
+    // 分批处理循环
+    while (batchCount < MAX_BATCHES) {
+      batchCount++
+      console.log(`\n🔄 开始处理第 ${batchCount} 批（最多 ${MAX_BATCHES} 批）...`)
+      console.log('-'.repeat(60))
 
-      // 跳过已完成的单号
-      if (states === 'Final delivery' || states === 'Returned to sender') {
-        skipped++
-        console.log(`⏭️ 跳过已完成单号：${trackingNumber} (状态: ${states})`)
+      // 获取待查询的追踪号（每次取 BATCH_SIZE 个，按 updated_at 排序，失败的会排在后面）
+      const trackingNumbers = await fetchPendingSearchNumbers()
+
+      if (trackingNumbers.length === 0) {
+        console.log('✅ 没有更多待查询的追踪号')
+        break
+      }
+
+      // 过滤掉已处理的追踪号（避免同一批次内重复处理）
+      const newItems = trackingNumbers.filter(
+        (item) => !processedSet.has(item.search_num)
+      )
+
+      if (newItems.length === 0) {
+        console.log('⚠️ 本批次所有追踪号都已处理过，等待下一轮')
+        // 如果所有追踪号都已处理过，等待一下再继续（给数据库时间更新）
+        await new Promise((resolve) => setTimeout(resolve, 2000))
         continue
       }
 
-      console.log(`\n正在处理追踪号：${trackingNumber}`)
-      console.log('-'.repeat(50))
+      // 处理本批次
+      const failedItems = await processBatch(newItems, stats)
 
-      // 处理追踪号（带重试逻辑，最多重试50次，基本可以覆盖大部分临时故障）
-      const result = await processTrackingNumber(trackingNumber, 50)
-      totalRetries += result.retries
+      // 记录已处理的追踪号
+      newItems.forEach((item) => processedSet.add(item.search_num))
+      totalProcessed += newItems.length
 
-      if (result.success) {
-        success++
+      console.log(
+        `\n📊 第 ${batchCount} 批完成：处理 ${newItems.length} 个，成功 ${stats.success}，失败 ${failedItems.length}，跳过 ${stats.skipped}`
+      )
+
+      // 如果本批次没有失败，说明处理顺利，可以继续下一批
+      // 如果失败数量很少，也继续处理（避免因为个别失败就停止）
+      if (failedItems.length === 0 || failedItems.length < newItems.length * 0.5) {
+        console.log(`✅ 本批次处理完成，继续下一批...`)
       } else {
-        failed++
-        console.error(`❌ 追踪号 ${trackingNumber} 最终处理失败`)
+        console.log(`⚠️ 本批次失败较多 (${failedItems.length}/${newItems.length})，将重试`)
       }
 
-      // 添加延迟，避免请求过快
-      await new Promise((resolve) => setTimeout(resolve, 1000))
+      // 批次间延迟，避免数据库压力过大
+      if (batchCount < MAX_BATCHES) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      }
     }
 
     console.log('\n' + '='.repeat(60))
     console.log('📊 爬虫执行完成')
 
+    const message =
+      batchCount >= MAX_BATCHES
+        ? `爬虫执行完成（达到最大批次限制 ${MAX_BATCHES}）：总计处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
+        : `爬虫执行完成：总计处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
+
     return {
       success: true,
-      message: `爬虫执行完成：总计 ${trackingNumbers.length} 个，成功 ${success} 个，失败 ${failed} 个，跳过 ${skipped} 个，总重试 ${totalRetries} 次`,
+      message,
       stats: {
-        total: trackingNumbers.length,
-        success,
-        failed,
-        skipped,
-        retries: totalRetries,
+        total: totalProcessed,
+        success: stats.success,
+        failed: stats.failed,
+        skipped: stats.skipped,
+        retries: stats.totalRetries,
+        batches: batchCount,
       },
     }
   } catch (error: any) {
