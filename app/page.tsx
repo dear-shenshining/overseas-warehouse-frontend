@@ -203,9 +203,13 @@ export default function LogisticsPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
+                    console.log('按钮被点击，ref.current:', overseasLogisticsRef.current)
                     // 触发子组件的更新函数
                     if (overseasLogisticsRef.current) {
+                      console.log('调用 handleUpdate')
                       overseasLogisticsRef.current.handleUpdate()
+                    } else {
+                      console.error('overseasLogisticsRef.current 为 null，无法调用 handleUpdate')
                     }
                   }}
                   disabled={overseasUpdating}

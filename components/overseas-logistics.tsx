@@ -289,10 +289,20 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         success: false,
         error: error.message || '更新失败，请重试',
       })
+      // 即使失败，也要重置父组件的更新状态，让按钮恢复可用
+      const completionTime = new Date()
+      setLastUpdateTime(completionTime)
+      onLastUpdateTimeChange?.(completionTime)
     } finally {
       setUpdating(false)
     }
   }
+
+  // 暴露 handleUpdate 函数给父组件
+  // 必须在 handleUpdate 函数定义之后
+  useImperativeHandle(ref, () => ({
+    handleUpdate,
+  }))
 
   // 导出数据功能（导出所有筛选后的数据，不是当前页）
   const handleExport = () => {
