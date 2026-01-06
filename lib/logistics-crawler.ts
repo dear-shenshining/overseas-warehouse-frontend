@@ -28,10 +28,12 @@ const SAFE_TIME_BUFFER_MS = 30000 // 安全时间缓冲 30 秒，在超时前提
 
 /**
  * 获取待查询的追踪号
- * @param sessionStartTime 本次处理会话的开始时间，只处理 updated_at < sessionStartTime 的追踪号
+ * @param sessionStartTime 本次处理会话的开始时间（从数据库获取，确保时区一致），只处理 updated_at < sessionStartTime 的追踪号
  */
 async function fetchPendingSearchNumbers(sessionStartTime: Date): Promise<Array<{ search_num: string; states: string | null }>> {
   try {
+    // 使用传入的 sessionStartTime（从数据库获取），确保时区一致性
+    // 这样可以避免 JavaScript Date 对象和数据库时区不一致的问题
     const sql = `
       SELECT search_num, states
       FROM post_searchs
@@ -450,7 +452,10 @@ export async function runCrawler(): Promise<{
 }> {
   const startTime = Date.now()
   // 记录本次处理会话的开始时间，确保本次调用中每个追踪号只处理一次
-  const sessionStartTime = new Date()
+  // 关键修复：从数据库获取当前时间，确保时区一致性
+  // 因为数据库连接已设置时区为 Asia/Shanghai，使用数据库的 NOW() 可以避免时区问题
+  const sessionTimeResult = await query<{ now: Date }>(`SELECT NOW() as now`)
+  const sessionStartTime = sessionTimeResult[0]?.now || new Date()
   
   try {
     const stats = {
@@ -465,6 +470,24 @@ export async function runCrawler(): Promise<{
 
     console.log(`📋 开始自动分批处理追踪号（每批 ${BATCH_SIZE} 个，最大执行时间 ${MAX_EXECUTION_TIME_MS / 1000} 秒）...`)
     console.log(`📅 本次会话开始时间：${sessionStartTime.toISOString()}`)
+    
+    // 先检查数据库中有多少待处理的追踪号
+    const totalCheck = await query<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM post_searchs
+      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+    `)
+    const totalPending = totalCheck[0]?.count || 0
+    
+    const eligibleCheck = await query<{ count: number }>(`
+      SELECT COUNT(*) as count
+      FROM post_searchs
+      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+        AND (updated_at IS NULL OR updated_at < $1)
+    `, [sessionStartTime])
+    const eligiblePending = eligibleCheck[0]?.count || 0
+    
+    console.log(`📊 数据库统计：总共 ${totalPending} 个待处理追踪号，其中 ${eligiblePending} 个符合本次会话条件（updated_at < ${sessionStartTime.toISOString()}）`)
     console.log('='.repeat(60))
 
     // 自动分批处理循环
@@ -481,6 +504,7 @@ export async function runCrawler(): Promise<{
 
       if (trackingNumbers.length === 0) {
         console.log('✅ 没有更多待查询的追踪号')
+        console.log(`📊 本次会话统计：处理了 ${totalProcessed} 个追踪号（成功 ${stats.success}，失败 ${stats.failed}，跳过 ${stats.skipped}）`)
         break
       }
 
@@ -606,9 +630,15 @@ export async function runCrawler(): Promise<{
       console.log('✅ 所有追踪号已处理完成')
     }
 
-    const message = hasMore
-      ? `本轮处理完成：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
-      : `处理完成：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次。所有追踪号已处理完成`
+    // 如果 totalProcessed 为 0，说明没有处理任何追踪号，需要给出更详细的提示
+    let message: string
+    if (totalProcessed === 0 && batchCount > 0) {
+      message = `未处理任何追踪号（共 ${batchCount} 个批次）。可能原因：1) 所有追踪号都是最终状态（Final delivery/Returned to sender），2) 所有追踪号的 updated_at 都 >= 本次会话开始时间，3) 数据库中没有待处理的追踪号。请检查数据库中的追踪号状态。`
+    } else if (hasMore) {
+      message = `本轮处理完成：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次`
+    } else {
+      message = `处理完成：已处理 ${totalProcessed} 个，成功 ${stats.success} 个，失败 ${stats.failed} 个，跳过 ${stats.skipped} 个，总重试 ${stats.totalRetries} 次，共 ${batchCount} 个批次。所有追踪号已处理完成`
+    }
 
     return {
       success: true,

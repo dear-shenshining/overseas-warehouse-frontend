@@ -191,9 +191,13 @@ export default function OverseasLogistics() {
 
     try {
       // 自动递归处理，直到全部完成或达到最大轮数
+      // 注意：爬虫在后台运行（Server Action），不会阻塞UI，用户可以正常使用搜索、刷新等功能
       while (roundCount < MAX_ROUNDS) {
         roundCount++
         console.log(`🔄 开始第 ${roundCount} 轮处理...`)
+
+        // 使用 setTimeout 确保不阻塞UI线程
+        await new Promise((resolve) => setTimeout(resolve, 0))
 
         const result = await updateLogisticsStatus()
 
@@ -233,7 +237,7 @@ export default function OverseasLogistics() {
         // 如果还有待处理的追踪号，继续下一轮
         if (result.stats?.hasMore) {
           console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${roundCount + 1} 轮...`)
-          // 短暂延迟后继续下一轮
+          // 短暂延迟后继续下一轮（使用 setTimeout 确保不阻塞UI）
           await new Promise((resolve) => setTimeout(resolve, 1000))
         } else {
           // 全部处理完成
@@ -253,9 +257,12 @@ export default function OverseasLogistics() {
         })
       }
 
-      // 更新成功后，刷新数据
-      await loadLogisticsData(searchQuery || undefined, statusFilter)
-      await loadStatistics()
+      // 更新成功后，刷新数据（不影响用户的其他操作）
+      // 使用 setTimeout 确保不阻塞UI
+      setTimeout(async () => {
+        await loadLogisticsData(searchQuery || undefined, statusFilter)
+        await loadStatistics()
+      }, 0)
     } catch (error: any) {
       console.error('更新失败:', error)
       setUpdateResult({
