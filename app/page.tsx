@@ -10,12 +10,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import OverseasLogistics from "@/components/overseas-logistics"
+import OverseasLogistics, { type OverseasLogisticsRef } from "@/components/overseas-logistics"
 import DailyProfitReport from "@/components/daily-profit-report"
 import SlowMovingInventory from "@/components/slow-moving-inventory"
 import TaskTimeline from "@/components/task-timeline"
 import HistoryTasks from "@/components/history-tasks"
-import { refreshTaskTable, fetchTaskChargeList } from "@/app/actions/inventory"
+import { refreshTaskTable } from "@/app/actions/inventory"
 
 export default function LogisticsPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -23,7 +23,8 @@ export default function LogisticsPage() {
   const [inventorySubMenu, setInventorySubMenu] = useState<"overview" | "task" | "history">("overview")
   const [inventorySubMenuOpen, setInventorySubMenuOpen] = useState(true) // 控制子菜单展开/收起
   const [isRefreshing, startRefresh] = useTransition()
-  const [chargeList, setChargeList] = useState<string[]>([])
+  // 负责人列表（写死，从 per_charge 表中获取的所有负责人）
+  const chargeList = ['宁一南', '吴安格', '朱梦婷', '老款下架', '姚吕敏', '重新上架', '金张倩']
   const [selectedCharge, setSelectedCharge] = useState<string>("")
   // 从 localStorage 读取最后更新时间，实现持久化存储
   const [overseasLastUpdateTime, setOverseasLastUpdateTime] = useState<Date | null>(() => {
@@ -34,7 +35,7 @@ export default function LogisticsPage() {
     return null
   })
   const [overseasUpdating, setOverseasUpdating] = useState(false)
-  const overseasLogisticsRef = useRef<{ handleUpdate: () => void } | null>(null)
+  const overseasLogisticsRef = useRef<OverseasLogisticsRef | null>(null)
   
   // 当更新时间变化时，同步到 localStorage
   useEffect(() => {
@@ -46,16 +47,7 @@ export default function LogisticsPage() {
     }
   }, [overseasLastUpdateTime])
 
-  // 加载负责人列表（只在任务及时限页面加载）
-  useEffect(() => {
-    if (activePage === "inventory" && inventorySubMenu === "task") {
-      fetchTaskChargeList().then((result) => {
-        if (result.success) {
-          setChargeList(result.data)
-        }
-      })
-    }
-  }, [activePage, inventorySubMenu])
+  // 负责人列表已写死，不再需要从数据库获取
 
   return (
     <div className="flex h-screen bg-background">
