@@ -219,48 +219,47 @@ export default function LogisticsPage() {
                 </Button>
               </div>
             )}
-            {activePage === "inventory" && inventorySubMenu === "overview" && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  startRefresh(async () => {
-                    const result = await refreshTaskTable()
-                    if (result.success) {
-                      // 可以添加成功提示
-                      console.log('任务表刷新成功')
-                    } else {
-                      // 可以添加错误提示
-                      console.error('任务表刷新失败:', result.error)
-                    }
-                  })
-                }}
-                disabled={isRefreshing}
-                className="ml-auto"
-              >
-                <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
-                刷新
-              </Button>
-            )}
             {activePage === "inventory" && inventorySubMenu === "task" && (
-              <Select
-                value={selectedCharge}
-                onValueChange={(value) => {
-                  setSelectedCharge(value === "all" ? "" : value)
-                }}
-              >
-                <SelectTrigger className="w-[180px] ml-auto">
-                  <SelectValue placeholder="筛选负责人" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部负责人</SelectItem>
-                  {chargeList.map((charge) => (
-                    <SelectItem key={charge} value={charge}>
-                      {charge}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-3 ml-auto">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    startRefresh(async () => {
+                      const result = await refreshTaskTable()
+                      if (result.success) {
+                        // 可以添加成功提示
+                        console.log('任务表刷新成功')
+                      } else {
+                        // 可以添加错误提示
+                        console.error('任务表刷新失败:', result.error)
+                      }
+                    })
+                  }}
+                  disabled={isRefreshing}
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  刷新
+                </Button>
+                <Select
+                  value={selectedCharge}
+                  onValueChange={(value) => {
+                    setSelectedCharge(value === "all" ? "" : value)
+                  }}
+                >
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="筛选负责人" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部负责人</SelectItem>
+                    {chargeList.map((charge) => (
+                      <SelectItem key={charge} value={charge}>
+                        {charge}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
           </div>
         </header>

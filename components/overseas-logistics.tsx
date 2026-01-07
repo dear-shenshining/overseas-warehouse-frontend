@@ -43,8 +43,11 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
+  const [totalRecords, setTotalRecords] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
   const [importing, setImporting] = useState(false)
   const [updating, setUpdating] = useState(false)
+  const [forceStop, setForceStop] = useState(false)
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null)
   const [importResult, setImportResult] = useState<{
     success: boolean
@@ -83,23 +86,39 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
   }, [])
 
-  // 加载物流数据
-  const loadLogisticsData = async (searchNum?: string, filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null) => {
+  // 加载物流数据（支持分页）
+  const loadLogisticsData = async (
+    searchNum?: string,
+    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null,
+    page: number = 1,
+    includeStats: boolean = false
+  ) => {
     try {
       setLoading(true)
       setError(null)
-      const result = await fetchLogisticsData(searchNum, filter || undefined)
+      const result = await fetchLogisticsData(searchNum, filter || undefined, page, pageSize, includeStats)
       if (result.success) {
         setLogisticsData(result.data)
-        setCurrentPage(1) // 重置到第一页
+        setTotalRecords(result.total || 0)
+        setTotalPages(result.totalPages || 0)
+        setCurrentPage(page)
+
+        // 如果包含统计数据，更新统计状态
+        if (result.statistics) {
+          setStatistics(result.statistics)
+        }
       } else {
         setError(result.error || "加载物流数据失败")
         setLogisticsData([])
+        setTotalRecords(0)
+        setTotalPages(0)
       }
     } catch (error: any) {
       console.error("加载物流数据失败:", error)
       setError(error?.message || "加载物流数据失败，请检查数据库连接和表结构")
       setLogisticsData([])
+      setTotalRecords(0)
+      setTotalPages(0)
     } finally {
       setLoading(false)
     }
@@ -118,16 +137,63 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
   }
 
-  // 初始加载
+  // 初始加载（并行加载数据和统计）
   useEffect(() => {
-    loadLogisticsData(undefined, statusFilter)
-    loadStatistics()
+    const loadInitialData = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+
+        // 并行加载数据和统计
+        const [dataResult, statsResult] = await Promise.allSettled([
+          fetchLogisticsData(undefined, statusFilter || undefined, 1, pageSize, false),
+          fetchLogisticsStatistics()
+        ])
+
+        // 处理数据结果
+        if (dataResult.status === 'fulfilled' && dataResult.value.success) {
+          setLogisticsData(dataResult.value.data)
+          setTotalRecords(dataResult.value.total || 0)
+          setTotalPages(dataResult.value.totalPages || 0)
+          setCurrentPage(1)
+        } else {
+          const error = dataResult.status === 'rejected' ? dataResult.reason :
+                       (dataResult.value as any)?.error || "加载物流数据失败"
+          setError(error)
+          setLogisticsData([])
+          setTotalRecords(0)
+          setTotalPages(0)
+        }
+
+        // 处理统计结果
+        if (statsResult.status === 'fulfilled' && statsResult.value.success) {
+          setStatistics(statsResult.value.data)
+        } else {
+          console.error("加载统计数据失败:", statsResult.status === 'rejected' ? statsResult.reason : statsResult.value)
+          // 统计失败不影响主数据加载
+        }
+      } catch (error: any) {
+        console.error("加载数据失败:", error)
+        setError(error?.message || "加载数据失败，请检查数据库连接")
+        setLogisticsData([])
+        setStatistics({
+          in_transit: 0,
+          returned: 0,
+          not_online: 0,
+          online_abnormal: 0,
+        })
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadInitialData()
   }, [statusFilter])
 
   // 搜索功能
   const handleSearch = () => {
     startTransition(() => {
-      loadLogisticsData(searchQuery || undefined, statusFilter)
+      loadLogisticsData(searchQuery || undefined, statusFilter, 1, false)
     })
   }
 
@@ -139,7 +205,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     } else {
       setStatusFilter(filterType)
     }
-    setCurrentPage(1) // 重置到第一页
+    // 筛选条件改变时会触发 useEffect 重新加载，不需要手动调用
   }
 
   // 处理回车搜索
@@ -149,11 +215,15 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
   }
 
-  // 计算分页数据
-  const totalPages = Math.ceil(logisticsData.length / pageSize)
-  const startIndex = (currentPage - 1) * pageSize
-  const endIndex = startIndex + pageSize
-  const paginatedData = logisticsData.slice(startIndex, endIndex)
+  // 处理分页切换
+  const handlePageChange = (page: number) => {
+    if (page >= 1 && page <= totalPages) {
+      loadLogisticsData(searchQuery || undefined, statusFilter, page, false)
+    }
+  }
+
+  // 分页数据（后端已分页，直接使用）
+  const paginatedData = logisticsData
 
   // 处理文件选择（导入）
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -192,7 +262,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
       // 导入成功后，刷新数据
       if (result.success) {
-        await loadLogisticsData(searchQuery || undefined, statusFilter)
+        await loadLogisticsData(searchQuery || undefined, statusFilter, currentPage, false)
         await loadStatistics()
       }
     } catch (error: any) {
@@ -271,6 +341,20 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
       // 递归处理多轮，直到全部完成或达到最大轮数
       while (progress.roundCount < MAX_ROUNDS) {
+        // 检查是否被强制停止
+        if (forceStop) {
+          console.log('🛑 检测到强制停止信号，中断处理')
+          setUpdateResult({
+            success: true,
+            message: `🛑 已强制停止。已处理 ${progress.totalProcessed} 个，成功 ${progress.totalSuccess} 个，失败 ${progress.totalFailed} 个，执行了 ${progress.roundCount} 轮`,
+          })
+          // 保存进度以便下次继续
+          localStorage.setItem('crawlerProgress', JSON.stringify(progress))
+          setCrawlerProgress({ ...progress })
+          setForceStop(false)
+          return
+        }
+
         progress.roundCount++
         console.log(`🔄 开始第 ${progress.roundCount} 轮处理，从ID ${progress.lastProcessedId} 开始（待处理单号最大ID: ${progress.maxId}）...`)
 
@@ -317,18 +401,13 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           progress.maxId = result.stats.maxId || progress.maxId
           const hasMore = result.stats.hasMore || false
 
-          console.log(`📊 第 ${progress.roundCount} 轮统计：处理了 ${result.stats.total} 个，最后ID ${progress.lastProcessedId}，待处理单号最大ID ${progress.maxId}，还有更多 ${hasMore}`)
+          console.log(`📊 第 ${progress.roundCount} 轮统计：处理了 ${result.stats.total} 个（单轮数量，应≤20），最后ID ${progress.lastProcessedId}，待处理单号最大ID ${progress.maxId}，还有更多 ${hasMore}`)
 
-          // 递归控制逻辑：双重验证确保准确性
-          // 主要条件：后端计算的 hasMore（基于 lastProcessedId < maxId）
-          // 辅助条件：前端本地验证（lastProcessedId 与 maxId 的比较）
+          // 递归控制逻辑：优先使用本地验证，确保准确性
+          // 主要条件：lastProcessedId >= maxId（已处理完所有单号）
+          // 辅助条件：hasMore 作为额外参考
 
-          if (hasMore && progress.lastProcessedId < progress.maxId) {
-            // ✅ 双重验证通过：还有更多待处理的追踪号，继续下一轮
-            console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${progress.roundCount + 1} 轮...`)
-            await new Promise((resolve) => setTimeout(resolve, 1000))
-            continue
-          } else if (progress.lastProcessedId >= progress.maxId) {
+          if (progress.lastProcessedId >= progress.maxId) {
             // ✅ 已处理到最大ID，所有待处理单号都已处理完成
             console.log(`✅ 已处理到最大ID ${progress.maxId}，所有待处理单号都已处理完成。`)
             const completionTime = new Date()
@@ -342,8 +421,13 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             localStorage.removeItem('crawlerProgress')
             setCrawlerProgress(null)
             break
+          } else if (hasMore) {
+            // 🔄 还有更多待处理的追踪号，继续下一轮
+            console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${progress.roundCount + 1} 轮...`)
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+            continue
           } else {
-            // ⚠️ 数据状态不一致：hasMore 和本地计算不匹配
+            // ⚠️ 数据状态不一致：lastProcessedId < maxId 但 hasMore = false
             console.log(`⚠️ 数据状态不一致：hasMore=${hasMore}, lastProcessedId=${progress.lastProcessedId}, maxId=${progress.maxId}`)
             const completionTime = new Date()
             setLastUpdateTime(completionTime)
@@ -390,7 +474,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
       // 更新成功后，刷新数据
       setTimeout(async () => {
-        await loadLogisticsData(searchQuery || undefined, statusFilter)
+        await loadLogisticsData(searchQuery || undefined, statusFilter, currentPage, false)
         await loadStatistics()
       }, 0)
     } catch (error: any) {
@@ -413,6 +497,27 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     localStorage.removeItem('crawlerProgress')
     setCrawlerProgress(null)
     console.log('🗑️ 已清除爬虫进度')
+  }
+
+  // 调试：查看当前进度状态
+  const debugCrawlerProgress = () => {
+    const savedProgress = localStorage.getItem('crawlerProgress')
+    console.log('🔍 localStorage中的进度:', savedProgress)
+    console.log('🔍 组件状态中的进度:', crawlerProgress)
+
+    if (savedProgress) {
+      try {
+        const progress = JSON.parse(savedProgress)
+        console.log('🔍 解析后的进度:', {
+          lastProcessedId: progress.lastProcessedId,
+          maxId: progress.maxId,
+          shouldContinue: progress.lastProcessedId < progress.maxId,
+          roundCount: progress.roundCount
+        })
+      } catch (error) {
+        console.error('解析进度失败:', error)
+      }
+    }
   }
 
   // 暴露 handleUpdate 和 clearCrawlerProgress 函数给父组件
@@ -577,7 +682,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               <AlertCircle className="h-6 w-6 text-chart-4" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">上网异常</p>
+              <p className="text-sm text-muted-foreground">上网异常（三天未上网）</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.online_abnormal}</p>
             </div>
           </div>
@@ -645,6 +750,23 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             <Button
               variant="outline"
               size="sm"
+              onClick={debugCrawlerProgress}
+              className="text-green-700 border-green-300 hover:bg-green-100 mr-2"
+            >
+              调试进度
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setForceStop(true)}
+              className="text-red-700 border-red-300 hover:bg-red-100 mr-2"
+              disabled={!updating}
+            >
+              强制停止
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={clearCrawlerProgress}
               className="text-blue-700 border-blue-300 hover:bg-blue-100"
             >
@@ -666,7 +788,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               size="sm"
               onClick={() => {
                 setError(null)
-                loadLogisticsData(searchQuery || undefined, statusFilter)
+                loadLogisticsData(searchQuery || undefined, statusFilter, currentPage, false)
                 loadStatistics()
               }}
             >
@@ -763,7 +885,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           <div className="p-4 border-t border-border">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="text-sm text-muted-foreground">
-                显示第 {startIndex + 1} - {Math.min(endIndex, logisticsData.length)} 条，共 {logisticsData.length} 条记录
+                显示第 {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, totalRecords)} 条，共 {totalRecords} 条记录
               </div>
               {totalPages > 1 && (
                 <Pagination>
@@ -773,14 +895,14 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                         href="#"
                         onClick={(e) => {
                           e.preventDefault()
-                          if (currentPage > 1) setCurrentPage(currentPage - 1)
+                          if (currentPage > 1) handlePageChange(currentPage - 1)
                         }}
                         className={currentPage === 1 ? "pointer-events-none opacity-50" : ""}
                       />
                     </PaginationItem>
                     {(() => {
                       const pages: (number | 'ellipsis')[] = []
-                      
+
                       if (totalPages <= 7) {
                         // 如果总页数少于等于7页，显示所有页码
                         for (let i = 1; i <= totalPages; i++) {
@@ -789,7 +911,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                       } else {
                         // 总是显示第一页
                         pages.push(1)
-                        
+
                         if (currentPage <= 3) {
                           // 当前页在前3页
                           for (let i = 2; i <= 4; i++) {
@@ -813,7 +935,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                           pages.push(totalPages)
                         }
                       }
-                      
+
                       return pages.map((page, index) => {
                         if (page === 'ellipsis') {
                           return (
@@ -828,7 +950,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                               href="#"
                               onClick={(e) => {
                                 e.preventDefault()
-                                setCurrentPage(page)
+                                handlePageChange(page)
                               }}
                               isActive={currentPage === page}
                             >
@@ -843,7 +965,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                         href="#"
                         onClick={(e) => {
                           e.preventDefault()
-                          if (currentPage < totalPages) setCurrentPage(currentPage + 1)
+                          if (currentPage < totalPages) handlePageChange(currentPage + 1)
                         }}
                         className={currentPage === totalPages ? "pointer-events-none opacity-50" : ""}
                       />
