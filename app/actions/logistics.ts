@@ -127,9 +127,9 @@ export async function importLogisticsFile(formData: FormData) {
 /**
  * 运行爬虫更新物流状态
  */
-export async function updateLogisticsStatus() {
+export async function updateLogisticsStatus(startId?: number) {
   try {
-    const result = await runCrawler()
+    const result = await runCrawler(startId || 0)
 
     if (result.success) {
       // 重新验证路径，刷新数据

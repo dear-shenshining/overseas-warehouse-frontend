@@ -25,6 +25,7 @@ interface OverseasLogisticsProps {
 
 export interface OverseasLogisticsRef {
   handleUpdate: () => void
+  clearCrawlerProgress: () => void
 }
 
 const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProps>(
@@ -55,8 +56,32 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     message?: string
     error?: string
   } | null>(null)
+  const [crawlerProgress, setCrawlerProgress] = useState<{
+    lastProcessedId: number
+    maxId: number
+    totalProcessed: number
+    totalSuccess: number
+    totalFailed: number
+    totalSkipped: number
+    roundCount: number
+  } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pageSize = 50
+
+  // 从 localStorage 恢复爬虫进度
+  useEffect(() => {
+    const savedProgress = localStorage.getItem('crawlerProgress')
+    if (savedProgress) {
+      try {
+        const progress = JSON.parse(savedProgress)
+        setCrawlerProgress(progress)
+        console.log('📋 从本地存储恢复爬虫进度:', progress)
+      } catch (error) {
+        console.error('恢复爬虫进度失败:', error)
+        localStorage.removeItem('crawlerProgress')
+      }
+    }
+  }, [])
 
   // 加载物流数据
   const loadLogisticsData = async (searchNum?: string, filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null) => {
@@ -186,44 +211,84 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   }
 
   // 处理更新按钮（运行爬虫）
-  const handleUpdate = async () => {
+  const handleUpdate = async (startId?: number, maxId?: number) => {
     setUpdating(true)
-    setUpdateResult(null)
-    // 爬虫运行中，隐藏最后更新时间
-    onLastUpdateTimeChange?.(null)
 
-    let totalProcessed = 0
-    let totalSuccess = 0
-    let totalFailed = 0
-    let totalSkipped = 0
-    let totalRetries = 0
-    let totalBatches = 0
-    let roundCount = 0
-    const MAX_ROUNDS = 20 // 最多自动执行 20 轮，避免无限循环
+    // 从参数、组件状态或localStorage中获取进度
+    let progress = {
+      lastProcessedId: startId || 0,
+      maxId: maxId || 0,
+      totalProcessed: 0,
+      totalSuccess: 0,
+      totalFailed: 0,
+      totalSkipped: 0,
+      roundCount: 0
+    }
+
+    // 如果没有传入参数，尝试从组件状态或localStorage恢复
+    if (!startId && !maxId) {
+      if (crawlerProgress) {
+        progress = { ...crawlerProgress }
+        console.log('📋 从组件状态恢复进度:', progress)
+      } else {
+        const savedProgress = localStorage.getItem('crawlerProgress')
+        if (savedProgress) {
+          try {
+            progress = JSON.parse(savedProgress)
+            console.log('📋 从localStorage恢复进度:', progress)
+          } catch (error) {
+            console.error('恢复进度失败:', error)
+            localStorage.removeItem('crawlerProgress')
+          }
+        }
+      }
+    }
+
+    // 只有第一次调用（没有进度）时才重置结果和更新时间
+    if (progress.lastProcessedId === 0) {
+      setUpdateResult(null)
+      onLastUpdateTimeChange?.(null)
+    }
+
+    // 更新组件状态
+    setCrawlerProgress(progress)
+
+    const MAX_ROUNDS = 50 // 最多自动执行 50 轮，避免无限循环
 
     try {
-      // 立即显示开始处理的提示
-      setUpdateResult({
-        success: true,
-        message: '正在初始化爬虫...',
-      })
-
-      // 自动递归处理，直到全部完成或达到最大轮数
-      // 注意：爬虫在后台运行（Server Action），不会阻塞UI，用户可以正常使用搜索、刷新等功能
-      while (roundCount < MAX_ROUNDS) {
-        roundCount++
-        console.log(`🔄 开始第 ${roundCount} 轮处理...`)
-
-        // 在开始处理前立即更新提示
+      // 显示开始处理的提示
+      if (progress.lastProcessedId === 0) {
         setUpdateResult({
           success: true,
-          message: `正在开始第 ${roundCount} 轮处理...`,
+          message: '正在启动爬虫...',
         })
+      } else {
+        setUpdateResult({
+          success: true,
+          message: `从ID ${progress.lastProcessedId} 继续处理（已处理 ${progress.totalProcessed} 个）...`,
+        })
+      }
+
+      // 递归处理多轮，直到全部完成或达到最大轮数
+      while (progress.roundCount < MAX_ROUNDS) {
+        progress.roundCount++
+        console.log(`🔄 开始第 ${progress.roundCount} 轮处理，从ID ${progress.lastProcessedId} 开始（待处理单号最大ID: ${progress.maxId}）...`)
+
+        // 更新UI显示当前轮次
+        setUpdateResult({
+          success: true,
+          message: `正在处理第 ${progress.roundCount} 轮（从ID ${progress.lastProcessedId} 开始，已累计处理 ${progress.totalProcessed} 个）...`,
+        })
+
+        // 保存当前进度到localStorage
+        localStorage.setItem('crawlerProgress', JSON.stringify(progress))
+        setCrawlerProgress({ ...progress })
 
         // 使用 setTimeout 确保不阻塞UI线程
         await new Promise((resolve) => setTimeout(resolve, 0))
 
-        const result = await updateLogisticsStatus()
+        // 调用爬虫处理一批追踪号
+        const result = await updateLogisticsStatus(progress.lastProcessedId)
 
         if (!result.success) {
           // 如果出错，停止递归
@@ -234,95 +299,96 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             success: false,
             error: result.error || '更新失败',
           })
+          // 清除进度
+          localStorage.removeItem('crawlerProgress')
+          setCrawlerProgress(null)
           break
         }
 
         // 累计统计信息
-        // 注意：result.stats 是本轮的统计，需要累加
-        // 因为每次调用 runCrawler() 时，后端的 stats 都会重置
-        let roundProcessed = 0
         if (result.success && 'stats' in result && result.stats) {
-          // 每轮返回的 stats 是本轮处理的统计，需要累加到总计数中
-          // 但是 totalProcessed 应该使用累计值（成功 + 失败），而不是后端的 total
-          // 因为后端的 total 只是本轮处理的追踪号数量
-          roundProcessed = result.stats.total || 0
-          const roundSuccess = result.stats.success || 0
-          const roundFailed = result.stats.failed || 0
-          const roundSkipped = result.stats.skipped || 0
-          const roundRetries = result.stats.retries || 0
-          const roundBatches = result.stats.batches || 0
-          
-          // 累加统计数据
-          // 注意：后端的 stats 是每轮重置的，所以需要累加
-          // 但是 totalProcessed 应该使用后端的 total（已经是本轮累计的）
-          totalProcessed += roundProcessed
-          totalSuccess += roundSuccess
-          totalFailed += roundFailed
-          totalSkipped += roundSkipped
-          totalRetries += roundRetries
-          totalBatches += roundBatches
-          
-          // 调试日志：显示每轮的统计信息
-          console.log(`📊 第 ${roundCount} 轮统计：处理了 ${roundProcessed} 个（成功 ${roundSuccess}，失败 ${roundFailed}，跳过 ${roundSkipped}），累计处理 ${totalProcessed} 个`)
-        }
+          progress.totalProcessed += result.stats.total || 0
+          progress.totalSuccess += result.stats.success || 0
+          progress.totalFailed += result.stats.failed || 0
+          progress.totalSkipped += result.stats.skipped || 0
 
-        // 更新 UI 显示当前进度
-        const currentMessage = result.success && 'stats' in result && result.stats?.hasMore
-          ? `正在处理中...（第 ${roundCount} 轮，已处理 ${totalProcessed} 个，还有待处理）`
-          : `处理完成！总计处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个，总重试 ${totalRetries} 次，共 ${totalBatches} 个批次`
-        
-        setUpdateResult({
-          success: true,
-          message: currentMessage,
-        })
+          // 更新起始ID和最大ID为下一轮的开始点
+          progress.lastProcessedId = result.stats.lastProcessedId || progress.lastProcessedId
+          progress.maxId = result.stats.maxId || progress.maxId
+          const hasMore = result.stats.hasMore || false
 
-        // 检查是否还有待处理的追踪号，以及是否真的处理了新的追踪号
-        const hasMore = result.success && 'stats' in result && result.stats && result.stats.hasMore
-        const hasNewProcessed = roundProcessed > 0
-        
-        // 三重保护：确保不会无限循环
-        // 1. 检查是否达到最大轮数（外层 while 循环保护）
-        // 2. 检查是否还有待处理的追踪号（hasMore）
-        // 3. 检查是否真的处理了新的追踪号（hasNewProcessed）- 关键保护！
-        if (hasMore && hasNewProcessed) {
-          // 只有同时满足：还有待处理 + 本轮处理了新追踪号，才继续
-          console.log(`ℹ️ 还有待处理的追踪号，且本轮处理了 ${roundProcessed} 个新追踪号，1 秒后自动继续第 ${roundCount + 1} 轮...`)
-          // 短暂延迟后继续下一轮（使用 setTimeout 确保不阻塞UI）
-          await new Promise((resolve) => setTimeout(resolve, 1000))
-        } else {
-          // 退出条件：没有待处理 OR 没有处理新追踪号
-          if (hasMore && !hasNewProcessed) {
-            console.log(`⚠️ 后端返回 hasMore=true，但本轮没有处理新的追踪号（roundProcessed=${roundProcessed}）。可能是重复处理或所有追踪号都已尝试过。停止循环以避免无限循环。`)
-          } else if (!hasMore) {
-            console.log(`✅ 后端返回 hasMore=false，所有追踪号已处理完成。停止循环。`)
+          console.log(`📊 第 ${progress.roundCount} 轮统计：处理了 ${result.stats.total} 个，最后ID ${progress.lastProcessedId}，待处理单号最大ID ${progress.maxId}，还有更多 ${hasMore}`)
+
+          // 递归控制逻辑：双重验证确保准确性
+          // 主要条件：后端计算的 hasMore（基于 lastProcessedId < maxId）
+          // 辅助条件：前端本地验证（lastProcessedId 与 maxId 的比较）
+
+          if (hasMore && progress.lastProcessedId < progress.maxId) {
+            // ✅ 双重验证通过：还有更多待处理的追踪号，继续下一轮
+            console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${progress.roundCount + 1} 轮...`)
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+            continue
+          } else if (progress.lastProcessedId >= progress.maxId) {
+            // ✅ 已处理到最大ID，所有待处理单号都已处理完成
+            console.log(`✅ 已处理到最大ID ${progress.maxId}，所有待处理单号都已处理完成。`)
+            const completionTime = new Date()
+            setLastUpdateTime(completionTime)
+            onLastUpdateTimeChange?.(completionTime)
+            setUpdateResult({
+              success: true,
+              message: `✅ 全部处理完成！总计处理 ${progress.totalProcessed} 个，成功 ${progress.totalSuccess} 个，失败 ${progress.totalFailed} 个，跳过 ${progress.totalSkipped} 个，执行了 ${progress.roundCount} 轮`,
+            })
+            // 清除进度
+            localStorage.removeItem('crawlerProgress')
+            setCrawlerProgress(null)
+            break
+          } else {
+            // ⚠️ 数据状态不一致：hasMore 和本地计算不匹配
+            console.log(`⚠️ 数据状态不一致：hasMore=${hasMore}, lastProcessedId=${progress.lastProcessedId}, maxId=${progress.maxId}`)
+            const completionTime = new Date()
+            setLastUpdateTime(completionTime)
+            onLastUpdateTimeChange?.(completionTime)
+            setUpdateResult({
+              success: true,
+              message: `⚠️ 处理完成（检测到数据状态不一致，已安全停止）。总计处理 ${progress.totalProcessed} 个，成功 ${progress.totalSuccess} 个，失败 ${progress.totalFailed} 个，跳过 ${progress.totalSkipped} 个，执行了 ${progress.roundCount} 轮`,
+            })
+            // 清除进度
+            localStorage.removeItem('crawlerProgress')
+            setCrawlerProgress(null)
+            break
           }
-          // 全部处理完成
+        } else {
+          // 没有stats信息，出错处理
           const completionTime = new Date()
           setLastUpdateTime(completionTime)
           onLastUpdateTimeChange?.(completionTime)
           setUpdateResult({
-            success: true,
-            message: `✅ 全部处理完成！总计处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个，总重试 ${totalRetries} 次，共 ${totalBatches} 个批次，执行了 ${roundCount} 轮`,
+            success: false,
+            error: '服务器返回数据格式错误',
           })
-          break // 强制退出循环
+          // 清除进度
+          localStorage.removeItem('crawlerProgress')
+          setCrawlerProgress(null)
+          break
         }
       }
 
-      // 如果达到最大轮数，强制停止（防止无限循环的最后一道防线）
-      if (roundCount >= MAX_ROUNDS) {
-        console.log(`⚠️ 已达到最大处理轮数（${MAX_ROUNDS} 轮），强制停止以避免无限循环`)
+      // 如果达到最大轮数，强制停止
+      if (progress.roundCount >= MAX_ROUNDS) {
+        console.log(`⚠️ 已达到最大处理轮数（${MAX_ROUNDS} 轮），强制停止`)
         const completionTime = new Date()
         setLastUpdateTime(completionTime)
         onLastUpdateTimeChange?.(completionTime)
         setUpdateResult({
           success: true,
-          message: `⚠️ 已达到最大处理轮数（${MAX_ROUNDS} 轮）。已处理 ${totalProcessed} 个，成功 ${totalSuccess} 个，失败 ${totalFailed} 个，跳过 ${totalSkipped} 个。如果还有待处理的追踪号，请稍后再次点击"更新"按钮`,
+          message: `⚠️ 已达到最大处理轮数（${MAX_ROUNDS} 轮）。已处理 ${progress.totalProcessed} 个，成功 ${progress.totalSuccess} 个，失败 ${progress.totalFailed} 个。如果还有待处理的追踪号，请稍后再次点击"更新"按钮`,
         })
-        // 确保退出循环（虽然 while 循环已经会退出，但这里明确标记）
+        // 保存进度以便下次继续
+        localStorage.setItem('crawlerProgress', JSON.stringify(progress))
+        setCrawlerProgress({ ...progress })
       }
 
-      // 更新成功后，刷新数据（不影响用户的其他操作）
-      // 使用 setTimeout 确保不阻塞UI
+      // 更新成功后，刷新数据
       setTimeout(async () => {
         await loadLogisticsData(searchQuery || undefined, statusFilter)
         await loadStatistics()
@@ -342,10 +408,18 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
   }
 
-  // 暴露 handleUpdate 函数给父组件
-  // 必须在 handleUpdate 函数定义之后
+  // 清除爬虫进度
+  const clearCrawlerProgress = () => {
+    localStorage.removeItem('crawlerProgress')
+    setCrawlerProgress(null)
+    console.log('🗑️ 已清除爬虫进度')
+  }
+
+  // 暴露 handleUpdate 和 clearCrawlerProgress 函数给父组件
+  // 必须在函数定义之后
   useImperativeHandle(ref, () => ({
     handleUpdate,
+    clearCrawlerProgress,
   }))
 
   // 导出数据功能（导出所有筛选后的数据，不是当前页）
@@ -549,6 +623,32 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               onClick={() => setUpdateResult(null)}
             >
               关闭
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* 爬虫进度显示 */}
+      {crawlerProgress && (
+        <Card className="p-4 bg-blue-50 border-blue-200">
+          <div className="flex items-center justify-between">
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium text-blue-700">爬虫处理进度</h3>
+              <div className="text-xs text-blue-600 space-y-1">
+                <p>已执行轮数: {crawlerProgress.roundCount}</p>
+                <p>最后处理ID: {crawlerProgress.lastProcessedId}</p>
+                <p>待处理最大ID: {crawlerProgress.maxId}</p>
+                <p>累计处理: {crawlerProgress.totalProcessed} 个</p>
+                <p>成功: {crawlerProgress.totalSuccess} | 失败: {crawlerProgress.totalFailed} | 跳过: {crawlerProgress.totalSkipped}</p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearCrawlerProgress}
+              className="text-blue-700 border-blue-300 hover:bg-blue-100"
+            >
+              清除进度
             </Button>
           </div>
         </Card>
