@@ -171,7 +171,6 @@ export async function importLogisticsData(
 
     // 简化：先使用逐条插入确保能工作，后续再优化批量插入
     let inserted = 0
-    let updated = 0
     let skipped = 0
 
     console.log(`开始导入 ${orderData.length} 条记录...`)
@@ -197,14 +196,12 @@ export async function importLogisticsData(
         // 如果表是用小写字段名创建的，使用 ship_date
         // 如果表是用大写字段名创建的，使用 "Ship_date"
         // 先尝试小写（PostgreSQL 默认行为）
+        // 已存在记录不做任何更新（DO NOTHING）
         const sql = `
           INSERT INTO post_searchs (search_num, ship_date, channel)
           VALUES ($1, $2, $3)
           ON CONFLICT (search_num) 
-          DO UPDATE SET
-            ship_date = EXCLUDED.ship_date,
-            channel = EXCLUDED.channel,
-            updated_at = CURRENT_TIMESTAMP
+          DO NOTHING
         `
 
         console.log(`执行 SQL，参数:`, {
@@ -213,19 +210,26 @@ export async function importLogisticsData(
           channel: item.channel,
         })
 
-        await execute(sql, [
+        const result = await execute(sql, [
           item.shipping_num,
           item.ship_date,
           item.channel,
         ])
 
         // 根据检查结果统计
+        // 注意：使用 DO NOTHING 后，已存在的记录不会插入，affectedRows = 0
         if (existingSet.has(item.shipping_num)) {
-          updated++
-          console.log(`✓ [${i + 1}] 更新: ${item.shipping_num}`)
-        } else {
+          // 已存在的记录，不做任何更新，跳过
+          skipped++
+          console.log(`⏭️ [${i + 1}] 跳过（已存在）: ${item.shipping_num}`)
+        } else if (result.affectedRows > 0) {
+          // 新插入的记录
           inserted++
           console.log(`✓ [${i + 1}] 新增: ${item.shipping_num}`)
+        } else {
+          // 理论上不应该到这里，但为了安全起见
+          skipped++
+          console.log(`⏭️ [${i + 1}] 跳过: ${item.shipping_num}`)
         }
       } catch (itemError: any) {
         console.error(`❌ [${i + 1}] 导入失败 ${item.shipping_num}:`, itemError)
@@ -241,11 +245,11 @@ export async function importLogisticsData(
 
     return {
       success: true,
-      message: `导入完成：总计 ${orderData.length} 条，新增 ${inserted} 条，更新 ${updated} 条，跳过 ${skipped} 条`,
+      message: `导入完成：总计 ${orderData.length} 条，新增 ${inserted} 条，跳过 ${skipped} 条（已存在记录不做更新）`,
       stats: {
         total: orderData.length,
         inserted,
-        updated,
+        updated: 0, // 已改为不更新，保留字段以兼容前端
         skipped,
       },
     }
