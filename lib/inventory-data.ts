@@ -333,9 +333,11 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
 
       // PostgreSQL: 使用 ON CONFLICT 来处理唯一键冲突
       // count_down 会在查询时通过日期差计算，这里不需要设置
+      // 新插入时：created_at 使用当前时间（移动到任务表的时间）
+      // 更新时：保持原有的 created_at 不变（不在 UPDATE SET 中更新 created_at）
       await connection.query(
         `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT (ware_sku) DO UPDATE SET
          inventory_num = EXCLUDED.inventory_num,
          sales_num = EXCLUDED.sales_num,
@@ -343,7 +345,7 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
          charge = EXCLUDED.charge,
          label = EXCLUDED.label,
          promised_land = EXCLUDED.promised_land,
-         updated_at = EXCLUDED.updated_at`,
+         updated_at = CURRENT_TIMESTAMP`,
         [
           record.ware_sku,
           record.inventory_num,
@@ -352,8 +354,6 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
           record.charge ?? null,
           labelValue,
           record.promised_land ?? 0, // Default to 0 if null/undefined
-          record.created_at || new Date(),
-          record.updated_at || new Date(),
         ]
       )
     }
@@ -396,7 +396,7 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
           
           await connection.query(
             `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
              ON CONFLICT (ware_sku) DO UPDATE SET
              inventory_num = EXCLUDED.inventory_num,
              sales_num = EXCLUDED.sales_num,
@@ -404,7 +404,7 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
              charge = EXCLUDED.charge,
              label = EXCLUDED.label,
              promised_land = EXCLUDED.promised_land,
-             updated_at = EXCLUDED.updated_at`,
+             updated_at = CURRENT_TIMESTAMP`,
             [
               record.ware_sku,
               record.inventory_num,
@@ -413,8 +413,6 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
               record.charge ?? null,
               labelValue,
               record.promised_land ?? 0,
-              record.created_at || new Date(),
-              record.updated_at || new Date(),
             ]
           )
         }
