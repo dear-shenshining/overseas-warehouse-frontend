@@ -135,15 +135,20 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 加载统计数据
   const loadStatistics = async () => {
     try {
-      const result = await fetchLogisticsStatistics(
-        dateFrom && dateFrom.trim() ? dateFrom : undefined,
-        dateTo && dateTo.trim() ? dateTo : undefined
-      )
+      const dateFromValue = dateFrom && dateFrom.trim() ? dateFrom : undefined
+      const dateToValue = dateTo && dateTo.trim() ? dateTo : undefined
+      
+      console.log('📊 加载统计数据，日期筛选:', { dateFrom: dateFromValue, dateTo: dateToValue })
+      
+      const result = await fetchLogisticsStatistics(dateFromValue, dateToValue)
       if (result.success) {
+        console.log('📊 统计数据加载成功:', result.data)
         setStatistics({
           ...result.data,
           not_queried: result.data.not_queried ?? 0,
         })
+      } else {
+        console.error('📊 统计数据加载失败:', result.error)
       }
     } catch (error: any) {
       console.error("加载统计数据失败:", error)
