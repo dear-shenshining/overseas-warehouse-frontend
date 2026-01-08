@@ -13,13 +13,16 @@ export async function fetchLogisticsData(
   searchNum?: string,
   statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered',
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  page: number = 1,
+  pageSize: number = 50
 ) {
   try {
-    const data = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo)
+    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize)
     return {
       success: true,
-      data,
+      data: result.data,
+      total: result.total,
     }
   } catch (error: any) {
     console.error('获取物流数据失败:', error)
@@ -49,6 +52,7 @@ export async function fetchLogisticsData(
       success: false,
       error: errorMessage,
       data: [],
+      total: 0,
     }
   }
 }

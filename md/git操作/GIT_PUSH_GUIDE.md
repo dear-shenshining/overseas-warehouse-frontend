@@ -279,7 +279,7 @@ git commit -m "修复HTML解析逻辑
 
 **示例：**
 ```bash
-git commit -m "fix: 修复HTML解析逻辑，正确提取追踪状态字段"
+git commit -m "fix: 海外物流：添加时间查询，成功签收，未查询，和针对性爬虫。滞销库存：添加正常销售模块，倒计时具体到小时"
 ```
 
 ### 3. 打开编辑器编写提交信息
@@ -600,7 +600,7 @@ git pull origin main
 git add 冲突的文件
 
 # 5. 完成合并提交
-git commit -m "解决合并冲突"
+git commit -m "改变创建时间逻辑2.0"
 
 # 6. 再次推送
 git push origin main

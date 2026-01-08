@@ -107,13 +107,16 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         searchNum, 
         filter || undefined, 
         dateFrom && dateFrom.trim() ? dateFrom : undefined,
-        dateTo && dateTo.trim() ? dateTo : undefined
+        dateTo && dateTo.trim() ? dateTo : undefined,
+        page,
+        pageSize
       )
       if (result.success) {
         setLogisticsData(result.data)
-        // 计算分页信息（后端返回所有数据，前端分页）
-        setTotalRecords(result.data.length)
-        setTotalPages(Math.ceil(result.data.length / pageSize))
+        // 使用后端返回的总数
+        const total = (result as any).total || result.data.length
+        setTotalRecords(total)
+        setTotalPages(Math.ceil(total / pageSize))
         setCurrentPage(page)
       } else {
         setError(result.error || "加载物流数据失败")
@@ -169,7 +172,9 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             undefined, 
             statusFilter || undefined, 
             dateFrom && dateFrom.trim() ? dateFrom : undefined,
-            dateTo && dateTo.trim() ? dateTo : undefined
+            dateTo && dateTo.trim() ? dateTo : undefined,
+            1, // page
+            pageSize
           ),
           fetchLogisticsStatistics(
             dateFrom && dateFrom.trim() ? dateFrom : undefined,
@@ -180,9 +185,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         // 处理数据结果
         if (dataResult.status === 'fulfilled' && dataResult.value.success) {
           setLogisticsData(dataResult.value.data)
-          // 计算分页信息
-          setTotalRecords(dataResult.value.data.length)
-          setTotalPages(Math.ceil(dataResult.value.data.length / pageSize))
+          // 使用后端返回的总数
+          const total = (dataResult.value as any).total || dataResult.value.data.length
+          setTotalRecords(total)
+          setTotalPages(Math.ceil(total / pageSize))
           setCurrentPage(1)
         } else {
           const error = dataResult.status === 'rejected' ? dataResult.reason :

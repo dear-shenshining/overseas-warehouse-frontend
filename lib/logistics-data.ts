@@ -26,18 +26,22 @@ export interface LogisticsStatistics {
 }
 
 /**
- * 获取物流数据列表
+ * 获取物流数据列表（支持分页）
  * @param searchNum 搜索单号（可选，支持多个单号，用逗号分隔）
  * @param statusFilter 状态筛选类型：'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'delivered'（可选）
  * @param dateFrom 开始日期（可选）
  * @param dateTo 结束日期（可选）
+ * @param page 页码（从1开始，默认1）
+ * @param pageSize 每页数量（默认50）
  */
 export async function getLogisticsData(
   searchNum?: string,
   statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered',
   dateFrom?: string,
-  dateTo?: string
-): Promise<LogisticsRecord[]> {
+  dateTo?: string,
+  page: number = 1,
+  pageSize: number = 50
+): Promise<{ data: LogisticsRecord[], total: number }> {
   // 检查新字段是否存在
   const { hasTransferNum, hasOrderNum, hasNotes } = await checkLogisticsNewFields()
   
@@ -147,18 +151,32 @@ export async function getLogisticsData(
 
   sql += ' ORDER BY p.ship_date DESC, p.id DESC'
 
+  // 获取总数（用于分页）
+  const countSql = sql
+    .replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
+    .replace(/ORDER BY[\s\S]*$/, '')
+  
+  const countParams = params.slice(0) // 复制参数数组，排除分页参数
+  const countResult = await query<{ total: string | number }>(countSql, countParams)
+  const total = Number(countResult[0]?.total) || 0
+
+  // 添加分页
+  sql += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`
+  params.push(pageSize, (page - 1) * pageSize)
+
   // 调试：输出SQL和参数（仅在开发环境）
   if (process.env.NODE_ENV === 'development') {
     console.log('SQL:', sql)
     console.log('Params:', params)
+    console.log('Total:', total)
   }
 
   const results = await query<LogisticsRecord>(sql, params)
-  return results
+  return { data: results, total }
 }
 
 /**
- * 获取物流统计数据
+ * 获取物流统计数据（优化：合并为单个查询）
  * 根据状态分类统计：
  * - 运输中：除了 Final delivery、Returned to Sender、Not registered、退回、异常、退回/异常、未上网 之外的所有状态
  * - 退回/异常：Returned to Sender、退回、异常、退回/异常
@@ -185,59 +203,51 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
 
   const dateWhereClause = dateConditions.length > 0 ? ` AND ${dateConditions.join(' AND ')}` : ''
 
-  // 统计退回/异常订单数（黄色标识：包括办公室关闭/滞留和缺席/尝试投递，Retention属于运输中，不包含在内）
-  const returnedResult = await query<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM post_searchs WHERE states IN ('Returned to Sender','Office closed. Retention.', 'Absence. Attempted delivery.')${dateWhereClause}`,
-    dateParams.length > 0 ? dateParams : []
-  )
-  const returned = Number(returnedResult[0]?.count) || 0
+  // 优化：使用单个查询合并所有统计，使用 FILTER 子句
+  const statsSql = `
+    SELECT 
+      COUNT(*) FILTER (
+        WHERE states IN ('Returned to Sender', 'Office closed. Retention.', 'Absence. Attempted delivery.')
+      ) as returned,
+      COUNT(*) FILTER (
+        WHERE states IN ('Not registered')
+      ) as not_online,
+      COUNT(*) FILTER (
+        WHERE states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', 'Office closed. Retention.', 'Absence. Attempted delivery.')
+      ) as in_transit,
+      COUNT(*) FILTER (
+        WHERE states IN ('Not registered', '未上网')
+          AND ship_date IS NOT NULL
+          AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3
+      ) as online_abnormal,
+      COUNT(*) FILTER (
+        WHERE states IS NULL OR states = ''
+      ) as not_queried,
+      COUNT(*) FILTER (
+        WHERE states = 'Final delivery'
+      ) as delivered
+    FROM post_searchs
+    WHERE 1=1${dateWhereClause}
+  `
 
-  // 统计未上网订单数（红色标识）
-  const notOnlineResult = await query<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM post_searchs WHERE states IN ('Not registered')${dateWhereClause}`,
-    dateParams.length > 0 ? dateParams : []
-  )
-  const notOnline = Number(notOnlineResult[0]?.count) || 0
+  const statsResult = await query<{
+    returned: string | number
+    not_online: string | number
+    in_transit: string | number
+    online_abnormal: string | number
+    not_queried: string | number
+    delivered: string | number
+  }>(statsSql, dateParams.length > 0 ? dateParams : [])
 
-  // 统计运输中的订单数（绿色标识：除了 Final delivery、退回/异常、未上网 之外的所有状态，包括Retention，但不包括办公室关闭/滞留和缺席/尝试投递）
-  const inTransitResult = await query<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM post_searchs 
-     WHERE states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered','Office closed. Retention.','Absence. Attempted delivery.')${dateWhereClause}`,
-    dateParams.length > 0 ? dateParams : []
-  )
-  const inTransit = Number(inTransitResult[0]?.count) || 0
-
-  // 统计上网异常订单数（未上网且发货日期距今超过3天）
-  const onlineAbnormalResult = await query<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM post_searchs 
-     WHERE states IN ('Not registered', '未上网')
-     AND ship_date IS NOT NULL
-     AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3${dateWhereClause}`,
-    dateParams.length > 0 ? dateParams : []
-  )
-  const online_abnormal = Number(onlineAbnormalResult[0]?.count) || 0
-
-  // 统计未查询订单数（states 为空）
-  const notQueriedResult = await query<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM post_searchs WHERE (states IS NULL OR states = '')${dateWhereClause}`,
-    dateParams.length > 0 ? dateParams : []
-  )
-  const not_queried = Number(notQueriedResult[0]?.count) || 0
-
-  // 统计成功签收订单数
-  const deliveredResult = await query<{ count: string | number }>(
-    `SELECT COUNT(*) as count FROM post_searchs WHERE states = 'Final delivery'${dateWhereClause}`,
-    dateParams.length > 0 ? dateParams : []
-  )
-  const delivered = Number(deliveredResult[0]?.count) || 0
+  const result = statsResult[0] || {}
 
   return {
-    in_transit: inTransit,
-    returned: returned,
-    not_online: notOnline,
-    online_abnormal: online_abnormal,
-    not_queried: not_queried,
-    delivered: delivered,
+    in_transit: Number(result.in_transit) || 0,
+    returned: Number(result.returned) || 0,
+    not_online: Number(result.not_online) || 0,
+    online_abnormal: Number(result.online_abnormal) || 0,
+    not_queried: Number(result.not_queried) || 0,
+    delivered: Number(result.delivered) || 0,
   }
 }
 
