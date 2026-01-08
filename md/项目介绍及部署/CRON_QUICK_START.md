@@ -24,7 +24,7 @@
 3. **Settings** → **Environment Variables**
 4. 添加：
    - **Name**: `CRON_SECRET_KEY`
-   - **Value**: 刚才生成的密钥
+   - **Value**: 刚才生成的密钥 bKxfzfZ6uyJpOXx5XsivSo0ibTSxqRlc
    - **Environment**: ✅ Production
 5. 点击 **Save**
 6. **重要**：**Deployments** → 最新部署 → **⋯** → **Redeploy**
@@ -48,7 +48,7 @@
    ```
    Title: 更新倒计时
    
-   Address: https://your-app.vercel.app/api/update-countdown?secret=YOUR_SECRET_KEY
+   Address: https://www.jinyanyan.com/api/update-countdown?secret=bKxfzfZ6uyJpOXx5XsivSo0ibTSxqRlc
    ```
    **替换**：
    - `your-app.vercel.app` → 您的 Vercel 域名
@@ -117,6 +117,15 @@ LIMIT 5;
 ### 500 错误？
 - 查看 Vercel 日志：**Deployments** → 部署 → **Functions** → 日志
 - 检查数据库连接配置
+
+### 超时错误（Timeout）？
+- **Vercel Hobby 计划限制**：函数执行时间限制为 10 秒
+- **解决方案**：
+  1. 升级到 Vercel Pro 计划（60 秒限制）
+  2. 或者优化数据库查询（添加索引、减少数据量）
+  3. 检查 `task` 表的数据量，如果数据量过大，考虑分批更新
+- 查看 Vercel 日志了解具体超时时间
+- 检查数据库连接是否正常（Neon 等 serverless 数据库可能需要更长的连接时间）
 
 ### 任务没执行？
 - 检查任务是否已激活（Activated）

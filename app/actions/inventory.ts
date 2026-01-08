@@ -542,7 +542,7 @@ export async function fetchTaskHistoryStatistics() {
       error: error.message || '获取历史任务统计数据失败',
       data: {
         total: 0,
-        this_week: 0,
+        total_failed: 0,
         promised_land_1: 0,
         promised_land_2: 0,
         promised_land_3: 0,

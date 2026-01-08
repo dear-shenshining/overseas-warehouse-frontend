@@ -20,7 +20,7 @@ interface TrackingResult {
 }
 
   // 配置参数
-const BATCH_SIZE = 20 // 每批处理 20 个追踪号
+const BATCH_SIZE = 50 // 每批处理 50 个追踪号
 const MAX_EXECUTION_TIME_MS = 240000 // 最大执行时间 4 分钟（240秒），留出安全余量
 const SAFE_TIME_BUFFER_MS = 30000 // 安全时间缓冲 30 秒，在超时前提前返回
 
@@ -29,29 +29,130 @@ const SAFE_TIME_BUFFER_MS = 30000 // 安全时间缓冲 30 秒，在超时前提
  * 从指定的起始id开始，按 id ASC 排序，获取一批需要处理的追踪号
  * 同时返回当前所有待处理单号的最大ID
  */
-async function fetchPendingSearchNumbers(startId: number = 0, batchSize: number = 20): Promise<{
+async function fetchPendingSearchNumbers(
+  startId: number = 0, 
+  batchSize: number = 50,
+  filters?: {
+    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered'
+    dateFrom?: string
+    dateTo?: string
+    searchNums?: string[]
+  }
+): Promise<{
   items: Array<{ id: number; search_num: string; states: string | null }>
   maxId: number
 }> {
   try {
-    // 获取从startId开始的待处理追踪号（states 不是最终状态），按 id ASC 排序
+    // 构建基础WHERE条件
+    let whereConditions = ['id > $1']
+    const params: any[] = [startId]
+    let paramIndex = 2
+
+    // 应用状态筛选
+    if (filters?.statusFilter) {
+      const statusFilter = filters.statusFilter
+      if (statusFilter === 'returned') {
+        whereConditions.push(`states IN ('Returned to Sender', '退回', '异常', '退回/异常', 'Office closed. Retention.', 'Absence. Attempted delivery.')`)
+      } else if (statusFilter === 'not_online') {
+        whereConditions.push(`states IN ('Not registered', '未上网')`)
+      } else if (statusFilter === 'online_abnormal') {
+        whereConditions.push(`states IN ('Not registered', '未上网')`)
+        whereConditions.push(`ship_date IS NOT NULL`)
+        whereConditions.push(`EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`)
+      } else if (statusFilter === 'in_transit') {
+        whereConditions.push(`states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`)
+      } else if (statusFilter === 'not_queried') {
+        whereConditions.push(`(states IS NULL OR states = '')`)
+      } else if (statusFilter === 'delivered') {
+        whereConditions.push(`states = 'Final delivery'`)
+      }
+    } else {
+      // 如果没有指定状态筛选，默认排除已完成和退回的状态（爬虫只处理待处理的）
+      whereConditions.push(`(states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)`)
+    }
+
+    // 应用日期筛选
+    if (filters?.dateFrom && filters.dateFrom.trim()) {
+      whereConditions.push(`ship_date >= $${paramIndex}::date`)
+      params.push(filters.dateFrom)
+      paramIndex++
+    }
+    if (filters?.dateTo && filters.dateTo.trim()) {
+      whereConditions.push(`ship_date <= ($${paramIndex}::date + INTERVAL '1 day' - INTERVAL '1 second')`)
+      params.push(filters.dateTo)
+      paramIndex++
+    }
+
+    // 应用货运单号筛选
+    if (filters?.searchNums && filters.searchNums.length > 0) {
+      const placeholders = filters.searchNums.map((_, i) => `$${paramIndex + i}`).join(',')
+      whereConditions.push(`search_num IN (${placeholders})`)
+      params.push(...filters.searchNums)
+      paramIndex += filters.searchNums.length
+    }
+
+    const whereClause = whereConditions.join(' AND ')
     const sql = `
       SELECT id, search_num, states
       FROM post_searchs
-      WHERE id > $1
-        AND (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
+      WHERE ${whereClause}
       ORDER BY id ASC
-      LIMIT $2
+      LIMIT $${paramIndex}
     `
+    params.push(batchSize)
 
-    const rows = await query<{ id: number; search_num: string; states: string | null }>(sql, [startId, batchSize])
+    const rows = await query<{ id: number; search_num: string; states: string | null }>(sql, params)
 
-    // 同时查询当前所有待处理单号的最大ID
+    // 查询符合条件的最大ID（移除 id > $1 和 LIMIT 条件）
+    const maxIdWhereConditions = whereConditions.filter(c => !c.includes('id >')).join(' AND ')
+    const maxIdParams: any[] = []
+    let maxIdParamIndex = 1
+    
+    // 重新构建参数（排除 startId，但保留其他筛选条件）
+    const maxIdWhereWithParams: string[] = []
+    if (filters?.statusFilter) {
+      const statusFilter = filters.statusFilter
+      if (statusFilter === 'returned') {
+        maxIdWhereWithParams.push(`states IN ('Returned to Sender', '退回', '异常', '退回/异常', 'Office closed. Retention.', 'Absence. Attempted delivery.')`)
+      } else if (statusFilter === 'not_online') {
+        maxIdWhereWithParams.push(`states IN ('Not registered', '未上网')`)
+      } else if (statusFilter === 'online_abnormal') {
+        maxIdWhereWithParams.push(`states IN ('Not registered', '未上网')`)
+        maxIdWhereWithParams.push(`ship_date IS NOT NULL`)
+        maxIdWhereWithParams.push(`EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`)
+      } else if (statusFilter === 'in_transit') {
+        maxIdWhereWithParams.push(`states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`)
+      } else if (statusFilter === 'not_queried') {
+        maxIdWhereWithParams.push(`(states IS NULL OR states = '')`)
+      } else if (statusFilter === 'delivered') {
+        maxIdWhereWithParams.push(`states = 'Final delivery'`)
+      }
+    } else {
+      // 如果没有指定状态筛选，默认排除已完成和退回的状态
+      maxIdWhereWithParams.push(`(states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)`)
+    }
+    
+    if (filters?.dateFrom && filters.dateFrom.trim()) {
+      maxIdWhereWithParams.push(`ship_date >= $${maxIdParamIndex}::date`)
+      maxIdParams.push(filters.dateFrom)
+      maxIdParamIndex++
+    }
+    if (filters?.dateTo && filters.dateTo.trim()) {
+      maxIdWhereWithParams.push(`ship_date <= ($${maxIdParamIndex}::date + INTERVAL '1 day' - INTERVAL '1 second')`)
+      maxIdParams.push(filters.dateTo)
+      maxIdParamIndex++
+    }
+    if (filters?.searchNums && filters.searchNums.length > 0) {
+      const placeholders = filters.searchNums.map((_, i) => `$${maxIdParamIndex + i}`).join(',')
+      maxIdWhereWithParams.push(`search_num IN (${placeholders})`)
+      maxIdParams.push(...filters.searchNums)
+    }
+    
     const maxIdQuery = await query<{ max_id: number }>(`
       SELECT MAX(id) as max_id
       FROM post_searchs
-      WHERE (states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)
-    `)
+      WHERE ${maxIdWhereWithParams.join(' AND ')}
+    `, maxIdParams)
 
     const maxId = maxIdQuery[0]?.max_id || 0
 
@@ -414,7 +515,15 @@ function hasEnoughTime(startTime: number): boolean {
  * 运行爬虫主函数
  * 从指定的起始id开始处理一批追踪号
  */
-export async function runCrawler(startId: number = 0): Promise<{
+export async function runCrawler(
+  startId: number = 0,
+  filters?: {
+    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered'
+    dateFrom?: string
+    dateTo?: string
+    searchNums?: string[]
+  }
+): Promise<{
   success: boolean
   message?: string
   error?: string
@@ -434,8 +543,8 @@ export async function runCrawler(startId: number = 0): Promise<{
   console.log(`⏰ 最大执行时间：${MAX_EXECUTION_TIME_MS / 1000} 秒`)
 
   try {
-    // 获取从startId开始的一批待处理的追踪号
-    const { items: trackingNumbers, maxId } = await fetchPendingSearchNumbers(startId)
+    // 获取从startId开始的一批待处理的追踪号（应用筛选条件）
+    const { items: trackingNumbers, maxId } = await fetchPendingSearchNumbers(startId, BATCH_SIZE, filters)
 
     if (trackingNumbers.length === 0) {
       console.log('✅ 没有更多待处理的追踪号')

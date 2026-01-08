@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition } from "react"
-import { Search, Calendar, CheckCircle, TrendingUp, Package, DollarSign, AlertCircle } from "lucide-react"
+import { Search, Calendar, CheckCircle, Package, DollarSign, AlertCircle, XCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
@@ -45,7 +45,7 @@ export default function HistoryTasks() {
   const [isPending, startTransition] = useTransition()
   const [statistics, setStatistics] = useState({
     total: 0,
-    this_week: 0,
+    total_failed: 0,
     promised_land_1: 0,
     promised_land_2: 0,
     promised_land_3: 0,
@@ -240,11 +240,11 @@ export default function HistoryTasks() {
         <Card className="p-6">
           <div className="flex items-center gap-4">
             <div className="p-3 bg-chart-2/10 rounded-lg">
-              <TrendingUp className="h-6 w-6 text-chart-2" />
+              <XCircle className="h-6 w-6 text-chart-2" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">本周完成</p>
-              <p className="text-2xl font-semibold text-foreground">{statistics.this_week}</p>
+              <p className="text-sm text-muted-foreground">总失败数</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.total_failed}</p>
             </div>
           </div>
         </Card>

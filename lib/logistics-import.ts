@@ -13,6 +13,9 @@ const EXCEL_COLUMNS = {
   SHIPPING_NUM: '发货单号',
   SHIP_DATE: '发货日期',
   CHANNEL: '发货渠道',
+  ORDER_NUM: '订单号',
+  TRANSFER_NUM: '转单号',
+  NOTES: '备注',
 } as const
 
 /**
@@ -22,6 +25,9 @@ function parseExcelFile(fileBuffer: Buffer): Array<{
   shipping_num: string
   ship_date: string | null
   channel: string | null
+  order_num: string | null
+  transfer_num: string | null
+  notes: string | null
 }> {
   try {
     const workbook = XLSX.read(fileBuffer, { type: 'buffer' })
@@ -41,12 +47,18 @@ function parseExcelFile(fileBuffer: Buffer): Array<{
 
     const hasChannel = EXCEL_COLUMNS.CHANNEL in firstRow
     const hasShipDate = EXCEL_COLUMNS.SHIP_DATE in firstRow
+    const hasOrderNum = EXCEL_COLUMNS.ORDER_NUM in firstRow
+    const hasTransferNum = EXCEL_COLUMNS.TRANSFER_NUM in firstRow
+    const hasNotes = EXCEL_COLUMNS.NOTES in firstRow
 
     // 解析数据
     const orderData: Array<{
       shipping_num: string
       ship_date: string | null
       channel: string | null
+      order_num: string | null
+      transfer_num: string | null
+      notes: string | null
     }> = []
 
     for (const row of data as any[]) {
@@ -109,10 +121,48 @@ function parseExcelFile(fileBuffer: Buffer): Array<{
         channel = String(row[EXCEL_COLUMNS.CHANNEL]).trim() || null
       }
 
+      // 处理订单号
+      let orderNum: string | null = null
+      if (hasOrderNum && row[EXCEL_COLUMNS.ORDER_NUM] != null) {
+        const orderNumValue = row[EXCEL_COLUMNS.ORDER_NUM]
+        if (typeof orderNumValue === 'number') {
+          orderNum = String(orderNumValue)
+        } else {
+          orderNum = String(orderNumValue).trim() || null
+        }
+      }
+
+      // 处理转单号（只能是数字）
+      let transferNum: string | null = null
+      if (hasTransferNum && row[EXCEL_COLUMNS.TRANSFER_NUM] != null) {
+        const transferNumValue = row[EXCEL_COLUMNS.TRANSFER_NUM]
+        if (typeof transferNumValue === 'number') {
+          transferNum = String(transferNumValue)
+        } else {
+          const transferNumStr = String(transferNumValue).trim()
+          // 验证转单号只能是数字
+          if (transferNumStr && /^\d+$/.test(transferNumStr)) {
+            transferNum = transferNumStr
+          } else if (transferNumStr) {
+            // 如果不是纯数字，设为null
+            transferNum = null
+          }
+        }
+      }
+
+      // 处理备注
+      let notes: string | null = null
+      if (hasNotes && row[EXCEL_COLUMNS.NOTES] != null) {
+        notes = String(row[EXCEL_COLUMNS.NOTES]).trim() || null
+      }
+
       orderData.push({
         shipping_num: shippingNum,
         ship_date: shipDate,
         channel: channel,
+        order_num: orderNum,
+        transfer_num: transferNum,
+        notes: notes,
       })
     }
 
@@ -185,36 +235,50 @@ export async function importLogisticsData(
     const existingSet = new Set(existingResult.map(r => r.search_num))
     console.log(`找到 ${existingSet.size} 条已存在的记录`)
 
+    // 检查新字段是否存在（只检查一次，提高性能）
+    const { checkLogisticsNewFields } = await import('./check-table-structure')
+    const { hasOrderNum, hasTransferNum, hasNotes } = await checkLogisticsNewFields()
+    
+    // 构建基础字段列表
+    const baseFields = ['search_num', 'ship_date', 'channel']
+    const allFields = [...baseFields]
+    if (hasOrderNum) allFields.push('order_num')
+    if (hasTransferNum) allFields.push('transfer_num')
+    if (hasNotes) allFields.push('notes')
+    
+    // 构建基础SQL模板
+    const placeholders = allFields.map((_, i) => `$${i + 1}`).join(', ')
+    const sqlTemplate = `
+      INSERT INTO post_searchs (${allFields.join(', ')})
+      VALUES (${placeholders})
+      ON CONFLICT (search_num) 
+      DO NOTHING
+    `
+
     // 逐条插入（确保稳定性）
     for (let i = 0; i < orderData.length; i++) {
       const item = orderData[i]
       try {
         console.log(`[${i + 1}/${orderData.length}] 处理: ${item.shipping_num}`)
 
-        // 检查是否有唯一约束，如果没有则先尝试添加
-        // 注意：PostgreSQL 默认将字段名转换为小写
-        // 如果表是用小写字段名创建的，使用 ship_date
-        // 如果表是用大写字段名创建的，使用 "Ship_date"
-        // 先尝试小写（PostgreSQL 默认行为）
-        // 已存在记录不做任何更新（DO NOTHING）
-        const sql = `
-          INSERT INTO post_searchs (search_num, ship_date, channel)
-          VALUES ($1, $2, $3)
-          ON CONFLICT (search_num) 
-          DO NOTHING
-        `
+        // 构建参数数组
+        const values: any[] = [item.shipping_num, item.ship_date, item.channel]
+        if (hasOrderNum) values.push(item.order_num)
+        if (hasTransferNum) values.push(item.transfer_num)
+        if (hasNotes) values.push(item.notes)
+        
+        const sql = sqlTemplate
 
         console.log(`执行 SQL，参数:`, {
           search_num: item.shipping_num,
           ship_date: item.ship_date,
           channel: item.channel,
+          order_num: item.order_num,
+          transfer_num: item.transfer_num,
+          notes: item.notes,
         })
 
-        const result = await execute(sql, [
-          item.shipping_num,
-          item.ship_date,
-          item.channel,
-        ])
+        const result = await execute(sql, values)
 
         // 根据检查结果统计
         // 注意：使用 DO NOTHING 后，已存在的记录不会插入，affectedRows = 0

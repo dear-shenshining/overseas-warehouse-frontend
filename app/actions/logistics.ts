@@ -11,10 +11,12 @@ import { revalidatePath } from 'next/cache'
 
 export async function fetchLogisticsData(
   searchNum?: string,
-  statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal'
+  statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered',
+  dateFrom?: string,
+  dateTo?: string
 ) {
   try {
-    const data = await getLogisticsData(searchNum, statusFilter)
+    const data = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo)
     return {
       success: true,
       data,
@@ -29,11 +31,15 @@ export async function fetchLogisticsData(
       errorMessage = '数据库密码未配置或错误。请检查 .env 文件中的 DB_PASSWORD 配置，并确保已重启开发服务器。'
     } else if (error.message?.includes('Access denied') || error.message?.includes('authentication failed')) {
       errorMessage = '数据库访问被拒绝。请检查 .env 中的数据库用户名和密码是否正确。'
-    } else if (error.message?.includes("doesn't exist")) {
+    } else if (error.message?.includes("doesn't exist") || error.message?.includes("does not exist") || error.message?.includes("column")) {
       if (error.message.includes('Unknown database')) {
         errorMessage = '数据库 seas_ware 不存在。请先创建数据库。'
-      } else if (error.message.includes("Table") || error.message.includes("relation") || error.message.includes("does not exist")) {
+      } else if (error.message.includes("Table") || error.message.includes("relation")) {
         errorMessage = '数据表 post_searchs 不存在。请在 Neon SQL Editor 中执行 sql/postgresql/create_post_searchs_table.sql 创建表。'
+      } else if (error.message.includes("column") && (error.message.includes("transfer_num") || error.message.includes("order_num") || error.message.includes("notes"))) {
+        errorMessage = '数据库表缺少新字段。请在 Neon SQL Editor 中执行 sql/postgresql/add_logistics_fields.sql 添加新字段（transfer_num, order_num, notes）。'
+      } else if (error.message.includes("column")) {
+        errorMessage = `数据库表字段错误：${error.message}。请检查表结构是否正确。`
       }
     } else if (error.message?.includes('ECONNREFUSED') || error.message?.includes('connect') || error.message?.includes('timeout')) {
       errorMessage = '无法连接到数据库服务器。请检查：1. Neon 连接是否正常 2. .env 文件配置是否正确 3. 网络连接是否正常。'
@@ -67,6 +73,8 @@ export async function fetchLogisticsStatistics() {
         returned: 0,
         not_online: 0,
         online_abnormal: 0,
+        not_queried: 0,
+        delivered: 0,
       },
     }
   }
@@ -127,9 +135,17 @@ export async function importLogisticsFile(formData: FormData) {
 /**
  * 运行爬虫更新物流状态
  */
-export async function updateLogisticsStatus(startId?: number) {
+export async function updateLogisticsStatus(
+  startId?: number,
+  filters?: {
+    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered'
+    dateFrom?: string
+    dateTo?: string
+    searchNums?: string[]
+  }
+) {
   try {
-    const result = await runCrawler(startId || 0)
+    const result = await runCrawler(startId || 0, filters)
 
     if (result.success) {
       // 重新验证路径，刷新数据
@@ -142,6 +158,102 @@ export async function updateLogisticsStatus(startId?: number) {
     return {
       success: false,
       error: error.message || '运行爬虫失败',
+    }
+  }
+}
+
+/**
+ * 更新物流记录字段（转单号、订单号、备注）
+ */
+export async function updateLogisticsField(
+  id: number,
+  field: 'transfer_num' | 'order_num' | 'notes',
+  value: string | null
+) {
+  try {
+    const { execute } = await import('@/lib/db')
+    const { checkColumnExists } = await import('@/lib/check-table-structure')
+    
+    // 检查字段是否存在
+    const fieldExists = await checkColumnExists('post_searchs', field)
+    if (!fieldExists) {
+      return {
+        success: false,
+        error: `字段 ${field} 不存在。请先执行 sql/postgresql/add_logistics_fields.sql 添加新字段。`,
+      }
+    }
+    
+    // 验证转单号只能是数字
+    if (field === 'transfer_num' && value !== null && value !== '') {
+      if (!/^\d+$/.test(value)) {
+        return {
+          success: false,
+          error: '转单号只能包含数字',
+        }
+      }
+    }
+
+    const sql = `UPDATE post_searchs SET ${field} = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+    const result = await execute(sql, [value || null, id])
+
+    if (result.affectedRows > 0) {
+      revalidatePath('/')
+      return {
+        success: true,
+        message: '更新成功',
+      }
+    } else {
+      return {
+        success: false,
+        error: '未找到要更新的记录',
+      }
+    }
+  } catch (error: any) {
+    console.error('更新物流字段失败:', error)
+    return {
+      success: false,
+      error: error.message || '更新失败',
+    }
+  }
+}
+
+/**
+ * 批量查询货运单号
+ */
+export async function batchSearchLogistics(searchNums: string[]) {
+  try {
+    const { query } = await import('@/lib/db')
+    
+    if (searchNums.length === 0) {
+      return {
+        success: true,
+        data: [],
+        found: [],
+        notFound: [],
+      }
+    }
+
+    const placeholders = searchNums.map((_, i) => `$${i + 1}`).join(',')
+    const sql = `SELECT search_num FROM post_searchs WHERE search_num IN (${placeholders})`
+    const results = await query<{ search_num: string }>(sql, searchNums)
+    
+    const found = results.map(r => r.search_num)
+    const notFound = searchNums.filter(num => !found.includes(num))
+
+    return {
+      success: true,
+      data: results,
+      found,
+      notFound,
+    }
+  } catch (error: any) {
+    console.error('批量查询失败:', error)
+    return {
+      success: false,
+      error: error.message || '查询失败',
+      data: [],
+      found: [],
+      notFound: [],
     }
   }
 }

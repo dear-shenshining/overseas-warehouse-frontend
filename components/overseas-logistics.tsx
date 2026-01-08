@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition, useRef, forwardRef, useImperativeHandle } from "react"
-import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle, RefreshCw } from "lucide-react"
+import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle, RefreshCw, CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
@@ -14,7 +14,8 @@ import {
   PaginationPrevious,
   PaginationEllipsis,
 } from "@/components/ui/pagination"
-import { fetchLogisticsData, fetchLogisticsStatistics, importLogisticsFile, updateLogisticsStatus } from "@/app/actions/logistics"
+import { fetchLogisticsData, fetchLogisticsStatistics, importLogisticsFile, updateLogisticsStatus, updateLogisticsField, batchSearchLogistics } from "@/app/actions/logistics"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import type { LogisticsRecord } from "@/lib/logistics-data"
 import { getStatusLabel } from "@/lib/status-mapping"
 import * as XLSX from "xlsx"
@@ -39,9 +40,16 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     returned: 0,
     not_online: 0,
     online_abnormal: 0,
+    not_queried: 0,
+    delivered: 0,
   })
   const [error, setError] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null>(null)
+  const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | null>(null)
+  const [dateFrom, setDateFrom] = useState<string>("")
+  const [dateTo, setDateTo] = useState<string>("")
+  const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
+  const [searchDialogOpen, setSearchDialogOpen] = useState(false)
+  const [searchResult, setSearchResult] = useState<{total: number, found: number, notFound: string[]} | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalRecords, setTotalRecords] = useState(0)
   const [totalPages, setTotalPages] = useState(0)
@@ -89,24 +97,24 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 加载物流数据（支持分页）
   const loadLogisticsData = async (
     searchNum?: string,
-    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null,
-    page: number = 1,
-    includeStats: boolean = false
+    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | null,
+    page: number = 1
   ) => {
     try {
       setLoading(true)
       setError(null)
-      const result = await fetchLogisticsData(searchNum, filter || undefined, page, pageSize, includeStats)
+      const result = await fetchLogisticsData(
+        searchNum, 
+        filter || undefined, 
+        dateFrom && dateFrom.trim() ? dateFrom : undefined,
+        dateTo && dateTo.trim() ? dateTo : undefined
+      )
       if (result.success) {
         setLogisticsData(result.data)
-        setTotalRecords(result.total || 0)
-        setTotalPages(result.totalPages || 0)
+        // 计算分页信息（后端返回所有数据，前端分页）
+        setTotalRecords(result.data.length)
+        setTotalPages(Math.ceil(result.data.length / pageSize))
         setCurrentPage(page)
-
-        // 如果包含统计数据，更新统计状态
-        if (result.statistics) {
-          setStatistics(result.statistics)
-        }
       } else {
         setError(result.error || "加载物流数据失败")
         setLogisticsData([])
@@ -129,7 +137,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     try {
       const result = await fetchLogisticsStatistics()
       if (result.success) {
-        setStatistics(result.data)
+        setStatistics({
+          ...result.data,
+          not_queried: result.data.not_queried ?? 0,
+        })
       }
     } catch (error: any) {
       console.error("加载统计数据失败:", error)
@@ -146,15 +157,21 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
         // 并行加载数据和统计
         const [dataResult, statsResult] = await Promise.allSettled([
-          fetchLogisticsData(undefined, statusFilter || undefined, 1, pageSize, false),
+          fetchLogisticsData(
+            undefined, 
+            statusFilter || undefined, 
+            dateFrom && dateFrom.trim() ? dateFrom : undefined,
+            dateTo && dateTo.trim() ? dateTo : undefined
+          ),
           fetchLogisticsStatistics()
         ])
 
         // 处理数据结果
         if (dataResult.status === 'fulfilled' && dataResult.value.success) {
           setLogisticsData(dataResult.value.data)
-          setTotalRecords(dataResult.value.total || 0)
-          setTotalPages(dataResult.value.totalPages || 0)
+          // 计算分页信息
+          setTotalRecords(dataResult.value.data.length)
+          setTotalPages(Math.ceil(dataResult.value.data.length / pageSize))
           setCurrentPage(1)
         } else {
           const error = dataResult.status === 'rejected' ? dataResult.reason :
@@ -176,29 +193,88 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         console.error("加载数据失败:", error)
         setError(error?.message || "加载数据失败，请检查数据库连接")
         setLogisticsData([])
-        setStatistics({
-          in_transit: 0,
-          returned: 0,
-          not_online: 0,
-          online_abnormal: 0,
-        })
+          setStatistics({
+            in_transit: 0,
+            returned: 0,
+            not_online: 0,
+            online_abnormal: 0,
+            not_queried: 0,
+            delivered: 0,
+          })
       } finally {
         setLoading(false)
       }
     }
 
     loadInitialData()
-  }, [statusFilter])
+  }, [statusFilter, dateFrom, dateTo])
 
-  // 搜索功能
-  const handleSearch = () => {
+  // 解析多个货运单号（支持多种分隔符）
+  const parseSearchNumbers = (input: string): string[] => {
+    if (!input.trim()) return []
+    
+    // 支持的分隔符：空格、逗号（中英文）、顿号、换行符
+    const separators = /[\s,，、\n]+/
+    const numbers = input
+      .split(separators)
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+    
+    return numbers
+  }
+
+  // 搜索功能（支持多个单号）
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) {
+      // 如果没有输入，直接加载所有数据
+      startTransition(() => {
+        loadLogisticsData(undefined, statusFilter, 1)
+      })
+      return
+    }
+
+    const searchNumbers = parseSearchNumbers(searchQuery)
+    
+    if (searchNumbers.length === 1) {
+      // 单个单号，直接搜索
+      startTransition(() => {
+        loadLogisticsData(searchNumbers[0], statusFilter, 1)
+      })
+    } else {
+      // 多个单号，先批量查询，然后显示结果
+      const result = await batchSearchLogistics(searchNumbers)
+      if (result.success) {
+        setSearchResult({
+          total: searchNumbers.length,
+          found: result.found.length,
+          notFound: result.notFound,
+        })
+        setSearchDialogOpen(true)
+        
+        // 使用找到的单号进行查询
+        if (result.found.length > 0) {
+          startTransition(() => {
+            loadLogisticsData(result.found.join(','), statusFilter, 1)
+          })
+        } else {
+          setLogisticsData([])
+          setTotalRecords(0)
+          setTotalPages(0)
+        }
+      }
+    }
+  }
+
+  // 清空搜索
+  const handleClearSearch = () => {
+    setSearchQuery("")
     startTransition(() => {
-      loadLogisticsData(searchQuery || undefined, statusFilter, 1, false)
+      loadLogisticsData(undefined, statusFilter, 1)
     })
   }
 
   // 处理卡片点击筛选
-  const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | null) => {
+  const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | null) => {
     // 如果点击的是当前已选中的卡片，则取消筛选
     if (statusFilter === filterType) {
       setStatusFilter(null)
@@ -206,6 +282,76 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       setStatusFilter(filterType)
     }
     // 筛选条件改变时会触发 useEffect 重新加载，不需要手动调用
+  }
+
+  // 重置所有筛选
+  const handleResetFilters = () => {
+    setStatusFilter(null)
+    setDateFrom("")
+    setDateTo("")
+    setSearchQuery("")
+    startTransition(() => {
+      loadLogisticsData(undefined, null, 1)
+    })
+  }
+
+  // 更新字段（转单号、订单号、备注）
+  const handleFieldUpdate = async (id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string) => {
+    // 转单号验证：只能是数字
+    if (field === 'transfer_num' && value && !/^\d+$/.test(value)) {
+      alert('转单号只能包含数字')
+      return
+    }
+
+    // 保存原始值，用于失败时回滚
+    const originalRecord = logisticsData.find(r => r.id === id)
+    if (!originalRecord) return
+
+    const originalValue = originalRecord[field]
+    const newValue = value || null
+
+    // 乐观更新：立即更新本地状态
+    setLogisticsData(prevData => 
+      prevData.map(record => 
+        record.id === id 
+          ? { ...record, [field]: newValue }
+          : record
+      )
+    )
+    setEditingField(null)
+
+    // 异步更新数据库
+    try {
+      const result = await updateLogisticsField(id, field, newValue)
+      if (!result.success) {
+        // 更新失败，回滚本地状态
+        setLogisticsData(prevData => 
+          prevData.map(record => 
+            record.id === id 
+              ? { ...record, [field]: originalValue }
+              : record
+          )
+        )
+        alert(result.error || '更新失败')
+      }
+    } catch (error) {
+      // 发生错误，回滚本地状态
+      setLogisticsData(prevData => 
+        prevData.map(record => 
+          record.id === id 
+            ? { ...record, [field]: originalValue }
+            : record
+        )
+      )
+      alert('更新失败，请重试')
+    }
+  }
+
+  // 获取显示的状态（转单号优先）
+  // 后端已经通过LEFT JOIN查询了转单号对应的状态，这里直接返回即可
+  const getDisplayState = (record: LogisticsRecord): string => {
+    // 后端查询时已经使用 COALESCE(t.states, p.states) 处理了转单号优先逻辑
+    return record.states
   }
 
   // 处理回车搜索
@@ -218,7 +364,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 处理分页切换
   const handlePageChange = (page: number) => {
     if (page >= 1 && page <= totalPages) {
-      loadLogisticsData(searchQuery || undefined, statusFilter, page, false)
+      loadLogisticsData(searchQuery || undefined, statusFilter, page)
     }
   }
 
@@ -262,7 +408,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
       // 导入成功后，刷新数据
       if (result.success) {
-        await loadLogisticsData(searchQuery || undefined, statusFilter, currentPage, false)
+        await loadLogisticsData(searchQuery || undefined, statusFilter, currentPage)
         await loadStatistics()
       }
     } catch (error: any) {
@@ -323,7 +469,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     // 更新组件状态
     setCrawlerProgress(progress)
 
-    const MAX_ROUNDS = 50 // 最多自动执行 50 轮，避免无限循环
+    const MAX_ROUNDS = 100 // 最多自动执行 100 轮，避免无限循环
 
     try {
       // 显示开始处理的提示
@@ -372,7 +518,15 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         await new Promise((resolve) => setTimeout(resolve, 0))
 
         // 调用爬虫处理一批追踪号
-        const result = await updateLogisticsStatus(progress.lastProcessedId)
+        // 构建筛选条件
+        const filters = {
+          statusFilter: statusFilter || undefined,
+          dateFrom: dateFrom && dateFrom.trim() ? dateFrom : undefined,
+          dateTo: dateTo && dateTo.trim() ? dateTo : undefined,
+          searchNums: searchQuery ? parseSearchNumbers(searchQuery) : undefined,
+        }
+
+        const result = await updateLogisticsStatus(progress.lastProcessedId, filters)
 
         if (!result.success) {
           // 如果出错，停止递归
@@ -474,7 +628,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
       // 更新成功后，刷新数据
       setTimeout(async () => {
-        await loadLogisticsData(searchQuery || undefined, statusFilter, currentPage, false)
+        await loadLogisticsData(searchQuery || undefined, statusFilter, currentPage)
         await loadStatistics()
       }, 0)
     } catch (error: any) {
@@ -580,48 +734,98 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     <div className="space-y-6">
       {/* Search and Export Section */}
       <Card className="p-6">
-        <div className="flex flex-col sm:flex-row gap-4">
-          <div className="flex-1 flex gap-2">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <div className="flex flex-col gap-4">
+          {/* 搜索框 */}
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1 flex gap-2">
+              <div className="flex-1 relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="输入货运单号查询（支持多个，用空格、逗号、换行分隔）..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  className="pl-10"
+                />
+              </div>
+              <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
+                <Search className="h-4 w-4" />
+                {isPending ? "搜索中..." : "搜索"}
+              </Button>
+              {searchQuery && (
+                <Button onClick={handleClearSearch} variant="outline" className="gap-2">
+                  清空
+                </Button>
+              )}
+            </div>
+            <Button onClick={handleExport} className="gap-2">
+              <Download className="h-4 w-4" />
+              导出数据
+            </Button>
+            <div className="relative">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={handleFileSelect}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                disabled={importing}
+              />
+              <Button variant="outline" className="gap-2" disabled={importing}>
+                <Upload className="h-4 w-4" />
+                {importing ? '导入中...' : '导入数据'}
+              </Button>
+            </div>
+          </div>
+          
+          {/* 日期筛选 */}
+          <div className="flex flex-wrap gap-4">
+            <div className="flex-1 min-w-[150px]">
+              <label className="text-sm text-muted-foreground mb-2 block">开始日期</label>
               <Input
-                placeholder="输入货运单号查询..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyPress={handleKeyPress}
-                className="pl-10"
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
               />
             </div>
-            <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
-              <Search className="h-4 w-4" />
-              {isPending ? "搜索中..." : "搜索"}
-            </Button>
-          </div>
-          <Button onClick={handleExport} className="gap-2">
-            <Download className="h-4 w-4" />
-            导出数据
-          </Button>
-          <div className="relative">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={handleFileSelect}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              disabled={importing}
-            />
-            <Button variant="outline" className="gap-2" disabled={importing}>
-              <Upload className="h-4 w-4" />
-              {importing ? '导入中...' : '导入数据'}
-            </Button>
+            <div className="flex-1 min-w-[150px]">
+              <label className="text-sm text-muted-foreground mb-2 block">结束日期</label>
+              <Input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={handleResetFilters} variant="outline" className="gap-2">
+                重置筛选
+              </Button>
+            </div>
           </div>
         </div>
       </Card>
 
       {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="flex gap-4">
         <Card 
-          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
+            statusFilter === 'delivered' ? 'ring-2 ring-green-500 bg-green-50' : ''
+          }`}
+          onClick={() => handleCardClick('delivered')}
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-green-100 rounded-lg">
+              <CheckCircle className="h-6 w-6 text-green-600" />
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">成功签收</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.delivered}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card 
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
             statusFilter === 'in_transit' ? 'ring-2 ring-chart-1 bg-chart-1/5' : ''
           }`}
           onClick={() => handleCardClick('in_transit')}
@@ -638,7 +842,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         </Card>
 
         <Card 
-          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
             statusFilter === 'returned' ? 'ring-2 ring-chart-2 bg-chart-2/5' : ''
           }`}
           onClick={() => handleCardClick('returned')}
@@ -655,7 +859,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         </Card>
 
         <Card 
-          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
             statusFilter === 'not_online' ? 'ring-2 ring-chart-3 bg-chart-3/5' : ''
           }`}
           onClick={() => handleCardClick('not_online')}
@@ -665,14 +869,14 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               <Calendar className="h-6 w-6 text-chart-3" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">未上网</p>
+              <p className="text-sm text-muted-foreground">未上网总数</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.not_online}</p>
             </div>
           </div>
         </Card>
 
-        <Card 
-          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
             statusFilter === 'online_abnormal' ? 'ring-2 ring-chart-4 bg-chart-4/5' : ''
           }`}
           onClick={() => handleCardClick('online_abnormal')}
@@ -682,8 +886,25 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               <AlertCircle className="h-6 w-6 text-chart-4" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">上网异常（三天未上网）</p>
+              <p className="text-sm text-muted-foreground">三天未上网</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.online_abnormal}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
+            statusFilter === 'not_queried' ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+          }`}
+          onClick={() => handleCardClick('not_queried')}
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-blue-100 rounded-lg">
+              <Search className="h-6 w-6 text-blue-600" />
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">未查询</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.not_queried}</p>
             </div>
           </div>
         </Card>
@@ -776,6 +997,34 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         </Card>
       )}
 
+      {/* 搜索结果弹窗 */}
+      <Dialog open={searchDialogOpen} onOpenChange={setSearchDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>搜索结果</DialogTitle>
+            <DialogDescription>
+              {searchResult && (
+                <div className="mt-4 space-y-2">
+                  <p className="text-sm">
+                    输入 <span className="font-semibold">{searchResult.total}</span> 个货运单号，
+                    搜索到 <span className="font-semibold text-green-600">{searchResult.found}</span> 个货运单号，
+                    <span className="font-semibold text-red-600">{searchResult.notFound.length}</span> 个货运单号未搜索到
+                  </p>
+                  {searchResult.notFound.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-sm font-medium mb-2">未搜索到的货运单号：</p>
+                      <div className="max-h-40 overflow-y-auto bg-muted p-2 rounded">
+                        <p className="text-xs font-mono break-all">{searchResult.notFound.join(', ')}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+
       {/* 错误提示 */}
       {error && (
         <Card className="p-4 bg-destructive/10 border-destructive/20">
@@ -788,7 +1037,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               size="sm"
               onClick={() => {
                 setError(null)
-                loadLogisticsData(searchQuery || undefined, statusFilter, currentPage, false)
+                loadLogisticsData(searchQuery || undefined, statusFilter, currentPage)
                 loadStatistics()
               }}
             >
@@ -817,64 +1066,161 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           <table className="w-full">
             <thead className="bg-muted/50 border-b border-border sticky top-0">
               <tr>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">订单号</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">货运单号</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">转单号</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">状态</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">发货日期</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">发货渠道</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">备注</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading || isPending ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-muted-foreground">
                     加载中...
                   </td>
                 </tr>
               ) : error ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-8 text-center text-sm text-destructive">
+                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-destructive">
                     数据加载失败，请查看上方错误提示
                   </td>
                 </tr>
               ) : logisticsData.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-muted-foreground">
                     暂无数据
                   </td>
                 </tr>
               ) : (
-                paginatedData.map((record, index) => (
-                  <tr key={`${record.search_num}-${index}`} className="hover:bg-muted/30 transition-colors">
-                    <td className="px-6 py-4 text-sm font-mono text-foreground">{record.search_num}</td>
-                    <td className="px-6 py-4">
-                      <span
-                        className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                          record.states === "Final delivery"
-                            ? "bg-background border border-border text-foreground" // 白色/无颜色
-                            : record.states === "Returned to Sender" || 
-                              record.states === "退回" || 
-                              record.states === "异常" || 
-                              record.states === "退回/异常" ||
-                              record.states === "Office closed. Retention." ||
-                              record.states === "Absence. Attempted delivery."
-                              ? "bg-chart-4/10 text-chart-4" // 黄色（退回/异常，包括办公室关闭/滞留和缺席/尝试投递，Retention属于运输中）
-                              : record.states === "Not registered" || 
-                                record.states === "未上网"
-                                ? "bg-destructive/10 text-destructive" // 红色
-                                : "bg-chart-2/10 text-chart-2" // 绿色（运输中和其他状态，包括Retention）
-                        }`}
-                      >
-                        {getStatusLabel(record.states)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">
-                      {record.Ship_date ? new Date(record.Ship_date).toLocaleDateString('zh-CN') : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">
-                      {record.channel || '-'}
-                    </td>
-                  </tr>
-                ))
+                paginatedData.map((record, index) => {
+                  const displayState = getDisplayState(record)
+                  const isEditing = editingField?.id === record.id
+                  
+                  return (
+                    <tr key={`${record.search_num}-${index}`} className="hover:bg-muted/30 transition-colors">
+                      {/* 订单号 */}
+                      <td className="px-6 py-4">
+                        {isEditing && editingField?.field === 'order_num' ? (
+                          <Input
+                            value={editingField.value}
+                            onChange={(e) => setEditingField({...editingField, value: e.target.value})}
+                            onBlur={() => handleFieldUpdate(record.id, 'order_num', editingField.value)}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                handleFieldUpdate(record.id, 'order_num', editingField.value)
+                              }
+                            }}
+                            className="w-full"
+                            autoFocus
+                          />
+                        ) : (
+                          <span 
+                            className="text-sm text-muted-foreground cursor-pointer hover:text-foreground"
+                            onClick={() => setEditingField({id: record.id, field: 'order_num', value: record.order_num || ''})}
+                          >
+                            {record.order_num || '-'}
+                          </span>
+                        )}
+                      </td>
+                      
+                      {/* 货运单号 */}
+                      <td className="px-6 py-4 text-sm font-mono text-foreground">{record.search_num}</td>
+                      
+                      {/* 转单号 */}
+                      <td className="px-6 py-4">
+                        {isEditing && editingField?.field === 'transfer_num' ? (
+                          <Input
+                            value={editingField.value}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              // 只允许数字
+                              if (value === '' || /^\d+$/.test(value)) {
+                                setEditingField({...editingField, value})
+                              }
+                            }}
+                            onBlur={() => handleFieldUpdate(record.id, 'transfer_num', editingField.value)}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                handleFieldUpdate(record.id, 'transfer_num', editingField.value)
+                              }
+                            }}
+                            className="w-full"
+                            autoFocus
+                            placeholder="只能输入数字"
+                          />
+                        ) : (
+                          <span 
+                            className="text-sm text-muted-foreground cursor-pointer hover:text-foreground"
+                            onClick={() => setEditingField({id: record.id, field: 'transfer_num', value: record.transfer_num || ''})}
+                          >
+                            {record.transfer_num || '-'}
+                          </span>
+                        )}
+                      </td>
+                      
+                      {/* 状态 */}
+                      <td className="px-6 py-4">
+                        <span
+                          className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                            displayState === "Final delivery"
+                              ? "bg-background border border-border text-foreground"
+                              : displayState === "Returned to Sender" || 
+                                displayState === "退回" || 
+                                displayState === "异常" || 
+                                displayState === "退回/异常" ||
+                                displayState === "Office closed. Retention." ||
+                                displayState === "Absence. Attempted delivery."
+                                ? "bg-chart-4/10 text-chart-4"
+                                : displayState === "Not registered" || 
+                                  displayState === "未上网"
+                                  ? "bg-destructive/10 text-destructive"
+                                  : "bg-chart-2/10 text-chart-2"
+                          }`}
+                        >
+                          {getStatusLabel(displayState)}
+                        </span>
+                      </td>
+                      
+                      {/* 发货日期 */}
+                      <td className="px-6 py-4 text-sm text-muted-foreground">
+                        {record.Ship_date ? new Date(record.Ship_date).toLocaleDateString('zh-CN') : '-'}
+                      </td>
+                      
+                      {/* 发货渠道 */}
+                      <td className="px-6 py-4 text-sm text-muted-foreground">
+                        {record.channel || '-'}
+                      </td>
+                      
+                      {/* 备注 */}
+                      <td className="px-6 py-4">
+                        {isEditing && editingField?.field === 'notes' ? (
+                          <Input
+                            value={editingField.value}
+                            onChange={(e) => setEditingField({...editingField, value: e.target.value})}
+                            onBlur={() => handleFieldUpdate(record.id, 'notes', editingField.value)}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                handleFieldUpdate(record.id, 'notes', editingField.value)
+                              }
+                            }}
+                            className="w-full"
+                            autoFocus
+                          />
+                        ) : (
+                          <span 
+                            className="text-sm text-muted-foreground cursor-pointer hover:text-foreground"
+                            onClick={() => setEditingField({id: record.id, field: 'notes', value: record.notes || ''})}
+                          >
+                            {record.notes || '-'}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>

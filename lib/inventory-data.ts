@@ -152,35 +152,45 @@ export async function importInventoryData(
       // 处理label字段：使用统一函数处理，确保 PostgreSQL 兼容性
       const labelValue = processLabelField(record.label)
 
-      // 检测任务完成：如果旧sale_day >= 15 且 新sale_day < 15 且 该SKU在task表中
+      // 检测任务完成：
+      // 非爆款：sale_day > 15 变为 sale_day <= 15
+      // 爆款：sale_day > 30 变为 sale_day <= 30
       const oldSaleDay = existingTask.length > 0 ? existingTask[0].sale_day : null
       const newSaleDay = record.sale_day ?? null
       
-      if (existingTask.length > 0 && oldSaleDay !== null && oldSaleDay >= 15 && newSaleDay !== null && newSaleDay < 15) {
-        // 任务完成，保存到历史表
+      if (existingTask.length > 0 && oldSaleDay !== null && newSaleDay !== null) {
         const taskRecord = existingTask[0]
-        // 处理任务记录的 label 字段
-        const taskLabelValue = processLabelField(taskRecord.label)
+        const isHotProduct = (taskRecord.sales_num ?? 0) > 300 // 爆款判断：sales_num > 300
         
-        // 使用事务连接执行插入历史记录
-        await connection.query(
-          `INSERT INTO task_history (
-            ware_sku, completed_sale_day, charge, promised_land,
-            inventory_num, sales_num, label, completed_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)`,
-          [
-            taskRecord.ware_sku,
-            newSaleDay, // 完成时的可售天数（新的值）
-            taskRecord.charge ?? null,
-            taskRecord.promised_land ?? 0,
-            taskRecord.inventory_num ?? 0,
-            taskRecord.sales_num ?? 0,
-            taskLabelValue,
-          ]
-        )
+        // 根据是否为爆款使用不同的阈值
+        const threshold = isHotProduct ? 30 : 15
+        const isTaskCompleted = oldSaleDay > threshold && newSaleDay <= threshold
         
-        // 从task表中删除已完成的任务（使用事务连接）
-        await connection.query('DELETE FROM task WHERE ware_sku = $1', [record.ware_sku])
+        if (isTaskCompleted) {
+          // 任务完成，保存到历史表
+          // 处理任务记录的 label 字段
+          const taskLabelValue = processLabelField(taskRecord.label)
+          
+          // 使用事务连接执行插入历史记录
+          await connection.query(
+            `INSERT INTO task_history (
+              ware_sku, completed_sale_day, charge, promised_land,
+              inventory_num, sales_num, label, completed_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)`,
+            [
+              taskRecord.ware_sku,
+              newSaleDay, // 完成时的可售天数（新的值）
+              taskRecord.charge ?? null,
+              taskRecord.promised_land ?? 0,
+              taskRecord.inventory_num ?? 0,
+              taskRecord.sales_num ?? 0,
+              taskLabelValue,
+            ]
+          )
+          
+          // 从task表中删除已完成的任务（使用事务连接）
+          await connection.query('DELETE FROM task WHERE ware_sku = $1', [record.ware_sku])
+        }
       }
 
       if (existing.length > 0) {
@@ -253,10 +263,10 @@ export async function importInventoryData(
 }
 
 /**
- * 更新 task 表中所有记录的 count_down 字段
+ * 更新 task 表中所有记录的 count_down 字段（单位：小时）
  * 根据 promised_land 的值使用不同的计算逻辑：
- * - promised_land = 0 时：count_down = 1 - DATEDIFF(NOW(), created_at)
- * - promised_land != 0 时：count_down = 7 - DATEDIFF(NOW(), created_at)
+ * - promised_land = 0 时：count_down = 24 - (当前时间 - created_at的小时差)
+ * - promised_land != 0 时：count_down = 168 - (当前时间 - created_at的小时差) (7天 = 168小时)
  */
 export async function updateTaskCountDown(): Promise<{ success: boolean; error?: string }> {
   const connection = await getConnection()
@@ -264,11 +274,11 @@ export async function updateTaskCountDown(): Promise<{ success: boolean; error?:
 
   try {
     // 使用 SQL 的 CASE WHEN 根据 promised_land 的值选择不同的计算方式
-    // PostgreSQL: EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+    // PostgreSQL: EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 计算小时差
     await connection.query(
       `UPDATE task SET count_down = CASE 
-        WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
-        ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+        WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
+        ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
       END
       WHERE created_at IS NOT NULL`
     )
@@ -616,10 +626,10 @@ export async function getTaskData(
   try {
     // 先更新所有记录的 count_down（根据 promised_land 使用不同计算逻辑）
     await updateTaskCountDown()
-    // 使用 CASE WHEN 根据 promised_land 的值计算 count_down
-    // PostgreSQL: EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+    // 使用 CASE WHEN 根据 promised_land 的值计算 count_down（单位：小时）
+    // PostgreSQL: EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 计算小时差
     let sql =
-      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END as count_down, created_at, updated_at FROM task WHERE 1=1'
+      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, CASE WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END as count_down, created_at, updated_at FROM task WHERE 1=1'
     const params: any[] = []
     let paramIndex = 1
 
@@ -649,8 +659,8 @@ export async function getTaskData(
       // 任务正在进行中：promised_land = 1 或 2 或 3
       sql += ' AND promised_land IN (1, 2, 3)'
     } else if (statusFilter === 'timeout') {
-      // 超时任务：count_down < 0
-      sql += ' AND (CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END) < 0'
+      // 超时任务：count_down < 0（单位：小时）
+      sql += ' AND (CASE WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END) < 0'
     }
 
     // 负责人筛选
@@ -840,11 +850,11 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
         has_inventory_no_sales,
         no_solution,
         in_progress,
-        // 统计 count_down < 0 的数量（超时任务）
+        // 统计 count_down < 0 的数量（超时任务，单位：小时）
         timeout: allData.filter((row: any) => {
           if (!row.created_at) return false
-          const daysDiff = Math.floor((new Date().getTime() - new Date(row.created_at).getTime()) / (1000 * 60 * 60 * 24))
-          const countDown = (row.promised_land ?? 0) === 0 ? 1 - daysDiff : 7 - daysDiff
+          const hoursDiff = (new Date().getTime() - new Date(row.created_at).getTime()) / (1000 * 60 * 60)
+          const countDown = (row.promised_land ?? 0) === 0 ? 24 - hoursDiff : 168 - hoursDiff
           return countDown < 0
         }).length,
       }
@@ -973,8 +983,8 @@ export async function getTaskHistoryData(
  * @returns 统计数据
  */
 export interface TaskHistoryStatistics {
-  total: number // 总完成数
-  this_week: number // 本周完成数
+  total: number // 总完成数（label 不包含 4）
+  total_failed: number // 总失败数（label 包含 4）
   promised_land_1: number // 退回厂家完成数
   promised_land_2: number // 降价清仓完成数
   promised_land_3: number // 打处理完成数
@@ -982,24 +992,19 @@ export interface TaskHistoryStatistics {
 
 export async function getTaskHistoryStatistics(): Promise<TaskHistoryStatistics> {
   try {
-    // 总完成数
-    const totalResult = await query<{ count: string | number }>('SELECT COUNT(*) as count FROM task_history')
+    // 总完成数：label 不包含 4（PostgreSQL JSONB 使用 NOT @> 操作符）
+    const totalResult = await query<{ count: string | number }>(
+      `SELECT COUNT(*) as count FROM task_history 
+       WHERE label IS NULL OR NOT (label::jsonb @> '[4]'::jsonb)`
+    )
     const total = Number(totalResult[0]?.count) || 0
 
-    // 本周完成数（从本周一开始）
-    const today = new Date()
-    const dayOfWeek = today.getDay()
-    const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-    const monday = new Date(today)
-    monday.setDate(today.getDate() - daysToMonday)
-    monday.setHours(0, 0, 0, 0)
-    const mondayStr = monday.toISOString().slice(0, 19).replace('T', ' ')
-
-    const thisWeekResult = await query<{ count: string | number }>(
-      'SELECT COUNT(*) as count FROM task_history WHERE completed_at >= ?',
-      [mondayStr]
+    // 总失败数：label 包含 4（PostgreSQL JSONB 使用 @> 操作符）
+    const totalFailedResult = await query<{ count: string | number }>(
+      `SELECT COUNT(*) as count FROM task_history 
+       WHERE label::jsonb @> '[4]'::jsonb`
     )
-    const this_week = Number(thisWeekResult[0]?.count) || 0
+    const total_failed = Number(totalFailedResult[0]?.count) || 0
 
     // 各方案完成数
     const promisedLand1Result = await query<{ count: string | number }>(
@@ -1019,7 +1024,7 @@ export async function getTaskHistoryStatistics(): Promise<TaskHistoryStatistics>
 
     return {
       total,
-      this_week,
+      total_failed,
       promised_land_1,
       promised_land_2,
       promised_land_3,
@@ -1028,7 +1033,7 @@ export async function getTaskHistoryStatistics(): Promise<TaskHistoryStatistics>
     console.error('获取历史任务统计数据失败:', error)
     return {
       total: 0,
-      this_week: 0,
+      total_failed: 0,
       promised_land_1: 0,
       promised_land_2: 0,
       promised_land_3: 0,
@@ -1062,14 +1067,14 @@ export async function updateTaskPromisedLand(
   promisedLand: 0 | 1 | 2 | 3
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // 更新 promised_land 时，同时更新 count_down（根据新的 promised_land 值计算）
-    // PostgreSQL: 使用 EXTRACT(DAY FROM ...) 计算日期差
+    // 更新 promised_land 时，同时更新 count_down（根据新的 promised_land 值计算，单位：小时）
+    // PostgreSQL: 使用 EXTRACT(EPOCH FROM ...) / 3600 计算小时差
     await execute(
       `UPDATE task SET 
         promised_land = $1, 
         count_down = CASE 
-          WHEN $1 = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
-          ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER
+          WHEN $1 = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
+          ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
         END,
         updated_at = CURRENT_TIMESTAMP
       WHERE ware_sku = $2`,

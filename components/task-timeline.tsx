@@ -62,6 +62,32 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
     }
   }
 
+  // 格式化倒计时：将小时数转换为"x天x小时"格式
+  const formatCountDown = (hours: number | null | undefined): string => {
+    if (hours === null || hours === undefined) {
+      return '0天0小时'
+    }
+    
+    // 如果为负数，显示为"已超时"
+    if (hours < 0) {
+      const absHours = Math.abs(hours)
+      const days = Math.floor(absHours / 24)
+      const remainingHours = Math.floor(absHours % 24)
+      return `已超时 ${days}天${remainingHours}小时`
+    }
+    
+    const days = Math.floor(hours / 24)
+    const remainingHours = Math.floor(hours % 24)
+    
+    if (days === 0) {
+      return `${remainingHours}小时`
+    } else if (remainingHours === 0) {
+      return `${days}天`
+    } else {
+      return `${days}天${remainingHours}小时`
+    }
+  }
+
   // 处理方案选择
   const handlePromisedLandChange = async (wareSku: string, value: string) => {
     const promisedLand = parseInt(value) as 0 | 1 | 2 | 3
@@ -395,7 +421,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                         </Select>
                       </td>
                       <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {record.count_down !== null && record.count_down !== undefined ? record.count_down : 0}
+                        {formatCountDown(record.count_down)}
                       </td>
                     </tr>
                   )

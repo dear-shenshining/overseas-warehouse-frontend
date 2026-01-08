@@ -232,7 +232,7 @@ git status
 
 ```bash
 # 提交暂存区的所有更改
-git commit -m "新增定时器"
+git commit -m "提交信息"
 ```
 
 **说明：**
