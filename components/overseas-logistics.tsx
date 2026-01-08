@@ -135,7 +135,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 加载统计数据
   const loadStatistics = async () => {
     try {
-      const result = await fetchLogisticsStatistics()
+      const result = await fetchLogisticsStatistics(
+        dateFrom && dateFrom.trim() ? dateFrom : undefined,
+        dateTo && dateTo.trim() ? dateTo : undefined
+      )
       if (result.success) {
         setStatistics({
           ...result.data,
@@ -163,7 +166,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             dateFrom && dateFrom.trim() ? dateFrom : undefined,
             dateTo && dateTo.trim() ? dateTo : undefined
           ),
-          fetchLogisticsStatistics()
+          fetchLogisticsStatistics(
+            dateFrom && dateFrom.trim() ? dateFrom : undefined,
+            dateTo && dateTo.trim() ? dateTo : undefined
+          )
         ])
 
         // 处理数据结果
@@ -184,7 +190,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
         // 处理统计结果
         if (statsResult.status === 'fulfilled' && statsResult.value.success) {
-          setStatistics(statsResult.value.data)
+          setStatistics({
+            ...statsResult.value.data,
+            not_queried: statsResult.value.data.not_queried ?? 0,
+          })
         } else {
           console.error("加载统计数据失败:", statsResult.status === 'rejected' ? statsResult.reason : statsResult.value)
           // 统计失败不影响主数据加载

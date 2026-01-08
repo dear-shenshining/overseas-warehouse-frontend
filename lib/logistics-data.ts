@@ -170,24 +170,47 @@ export async function getLogisticsData(
  * - 运输中：除了 Final delivery、Returned to Sender、Not registered、退回、异常、退回/异常、未上网 之外的所有状态
  * - 退回/异常：Returned to Sender、退回、异常、退回/异常
  * - 未上网：Not registered、未上网
+ * @param dateFrom 开始日期（可选）
+ * @param dateTo 结束日期（可选）
  */
-export async function getLogisticsStatistics(): Promise<LogisticsStatistics> {
+export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string): Promise<LogisticsStatistics> {
+  // 构建日期筛选条件
+  const dateConditions: string[] = []
+  const dateParams: any[] = []
+  let dateParamIndex = 1
+
+  if (dateFrom && dateFrom.trim()) {
+    dateConditions.push(`ship_date >= $${dateParamIndex}::date`)
+    dateParams.push(dateFrom)
+    dateParamIndex++
+  }
+  if (dateTo && dateTo.trim()) {
+    dateConditions.push(`ship_date <= ($${dateParamIndex}::date + INTERVAL '1 day' - INTERVAL '1 second')`)
+    dateParams.push(dateTo)
+    dateParamIndex++
+  }
+
+  const dateWhereClause = dateConditions.length > 0 ? ` AND ${dateConditions.join(' AND ')}` : ''
+
   // 统计退回/异常订单数（黄色标识：包括办公室关闭/滞留和缺席/尝试投递，Retention属于运输中，不包含在内）
   const returnedResult = await query<{ count: string | number }>(
-    "SELECT COUNT(*) as count FROM post_searchs WHERE states IN ('Returned to Sender','Office closed. Retention.', 'Absence. Attempted delivery.')"
+    `SELECT COUNT(*) as count FROM post_searchs WHERE states IN ('Returned to Sender','Office closed. Retention.', 'Absence. Attempted delivery.')${dateWhereClause}`,
+    dateParams
   )
   const returned = Number(returnedResult[0]?.count) || 0
 
   // 统计未上网订单数（红色标识）
   const notOnlineResult = await query<{ count: string | number }>(
-    "SELECT COUNT(*) as count FROM post_searchs WHERE states IN ('Not registered')"
+    `SELECT COUNT(*) as count FROM post_searchs WHERE states IN ('Not registered')${dateWhereClause}`,
+    dateParams
   )
   const notOnline = Number(notOnlineResult[0]?.count) || 0
 
   // 统计运输中的订单数（绿色标识：除了 Final delivery、退回/异常、未上网 之外的所有状态，包括Retention，但不包括办公室关闭/滞留和缺席/尝试投递）
   const inTransitResult = await query<{ count: string | number }>(
     `SELECT COUNT(*) as count FROM post_searchs 
-     WHERE states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered','Office closed. Retention.','Absence. Attempted delivery.')`
+     WHERE states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered','Office closed. Retention.','Absence. Attempted delivery.')${dateWhereClause}`,
+    dateParams
   )
   const inTransit = Number(inTransitResult[0]?.count) || 0
 
@@ -196,19 +219,22 @@ export async function getLogisticsStatistics(): Promise<LogisticsStatistics> {
     `SELECT COUNT(*) as count FROM post_searchs 
      WHERE states IN ('Not registered', '未上网')
      AND ship_date IS NOT NULL
-     AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`
+     AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3${dateWhereClause}`,
+    dateParams
   )
   const online_abnormal = Number(onlineAbnormalResult[0]?.count) || 0
 
   // 统计未查询订单数（states 为空）
   const notQueriedResult = await query<{ count: string | number }>(
-    "SELECT COUNT(*) as count FROM post_searchs WHERE states IS NULL OR states = ''"
+    `SELECT COUNT(*) as count FROM post_searchs WHERE (states IS NULL OR states = '')${dateWhereClause}`,
+    dateParams
   )
   const not_queried = Number(notQueriedResult[0]?.count) || 0
 
   // 统计成功签收订单数
   const deliveredResult = await query<{ count: string | number }>(
-    "SELECT COUNT(*) as count FROM post_searchs WHERE states = 'Final delivery'"
+    `SELECT COUNT(*) as count FROM post_searchs WHERE states = 'Final delivery'${dateWhereClause}`,
+    dateParams
   )
   const delivered = Number(deliveredResult[0]?.count) || 0
 

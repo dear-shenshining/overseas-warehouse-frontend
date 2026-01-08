@@ -53,9 +53,9 @@ export async function fetchLogisticsData(
   }
 }
 
-export async function fetchLogisticsStatistics() {
+export async function fetchLogisticsStatistics(dateFrom?: string, dateTo?: string) {
   try {
-    const stats = await getLogisticsStatistics()
+    const stats = await getLogisticsStatistics(dateFrom, dateTo)
     return {
       success: true,
       data: stats,
