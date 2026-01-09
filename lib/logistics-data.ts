@@ -36,6 +36,7 @@ export interface LogisticsStatistics {
  * @param dateTo 结束日期（可选）
  * @param page 页码（从1开始，默认1）
  * @param pageSize 每页数量（默认50）
+ * @param createdAtToday 是否只查询今天创建的数据（可选）
  */
 export async function getLogisticsData(
   searchNum?: string,
@@ -43,7 +44,8 @@ export async function getLogisticsData(
   dateFrom?: string,
   dateTo?: string,
   page: number = 1,
-  pageSize: number = 50
+  pageSize: number = 50,
+  createdAtToday?: boolean
 ): Promise<{ data: LogisticsRecord[], total: number }> {
   // 检查新字段是否存在（使用缓存）
   const { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate } = await getLogisticsFields()
@@ -134,6 +136,11 @@ export async function getLogisticsData(
     }
   }
 
+  // 创建时间筛选（今天创建的数据）
+  if (createdAtToday) {
+    sql += ` AND DATE(p.created_at) = CURRENT_DATE`
+  }
+
   // 根据状态筛选类型添加筛选条件
   // 注意：由于使用了COALESCE，WHERE条件需要使用COALESCE的结果
   if (statusFilter === 'returned') {
@@ -206,6 +213,11 @@ export async function getLogisticsData(
       countParams.push(dateTo)
       countParamIndex++
     }
+  }
+
+  // 创建时间筛选（今天创建的数据）
+  if (createdAtToday) {
+    countSql += ` AND DATE(p.created_at) = CURRENT_DATE`
   }
 
   // 状态筛选（简化版，不依赖 LEFT JOIN）

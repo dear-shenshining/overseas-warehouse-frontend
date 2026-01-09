@@ -15,10 +15,11 @@ export async function fetchLogisticsData(
   dateFrom?: string,
   dateTo?: string,
   page: number = 1,
-  pageSize: number = 50
+  pageSize: number = 50,
+  createdAtToday?: boolean
 ) {
   try {
-    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize)
+    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize, createdAtToday)
     return {
       success: true,
       data: result.data,
