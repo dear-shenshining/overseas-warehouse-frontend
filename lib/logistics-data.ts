@@ -3,7 +3,7 @@
  * 直接从数据库获取数据
  */
 import { query } from '@/lib/db'
-import { checkLogisticsNewFields } from './check-table-structure'
+import { getLogisticsFields } from './logistics-field-cache'
 
 export interface LogisticsRecord {
   id: number
@@ -45,8 +45,8 @@ export async function getLogisticsData(
   page: number = 1,
   pageSize: number = 50
 ): Promise<{ data: LogisticsRecord[], total: number }> {
-  // 检查新字段是否存在
-  const { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate } = await checkLogisticsNewFields()
+  // 检查新字段是否存在（使用缓存）
+  const { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate } = await getLogisticsFields()
   
   // 根据字段是否存在构建SELECT语句
   const selectFields = [
@@ -170,11 +170,67 @@ export async function getLogisticsData(
   sql += ' ORDER BY p.ship_date DESC, p.id DESC'
 
   // 获取总数（用于分页）
-  const countSql = sql
-    .replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
-    .replace(/ORDER BY[\s\S]*$/, '')
+  // 优化：COUNT 查询不需要 LEFT JOIN，直接在主表上查询
+  let countSql = `
+    SELECT COUNT(*) as total
+    FROM post_searchs p
+    WHERE 1=1
+  `
+  const countParams: any[] = []
+  let countParamIndex = 1
+
+  // 复制筛选条件（但不包括 LEFT JOIN）
+  if (searchNum) {
+    const searchNums = searchNum.split(',').map(s => s.trim()).filter(s => s)
+    if (searchNums.length > 0) {
+      const placeholders = searchNums.map((_, i) => `$${countParamIndex + i}`).join(',')
+      countSql += ` AND p.search_num IN (${placeholders})`
+      countParams.push(...searchNums)
+      countParamIndex += searchNums.length
+    }
+  }
+
+  // 日期筛选
+  if (dateFrom && dateFrom.trim() !== '') {
+    const dateFromMatch = dateFrom.match(/^\d{4}-\d{2}-\d{2}$/)
+    if (dateFromMatch) {
+      countSql += ` AND p.ship_date >= $${countParamIndex}::date`
+      countParams.push(dateFrom)
+      countParamIndex++
+    }
+  }
+  if (dateTo && dateTo.trim() !== '') {
+    const dateToMatch = dateTo.match(/^\d{4}-\d{2}-\d{2}$/)
+    if (dateToMatch) {
+      countSql += ` AND p.ship_date <= ($${countParamIndex}::date + INTERVAL '1 day' - INTERVAL '1 second')`
+      countParams.push(dateTo)
+      countParamIndex++
+    }
+  }
+
+  // 状态筛选（简化版，不依赖 LEFT JOIN）
+  if (statusFilter === 'returned') {
+    countSql += " AND p.states IN ('Returned to Sender', '退回', '异常', '退回/异常', 'Office closed. Retention.', 'Absence. Attempted delivery.')"
+  } else if (statusFilter === 'not_online') {
+    countSql += " AND p.states IN ('Not registered', '未上网')"
+  } else if (statusFilter === 'not_queried') {
+    countSql += " AND (p.states IS NULL OR p.states = '')"
+  } else if (statusFilter === 'online_abnormal') {
+    countSql += " AND p.states IN ('Not registered', '未上网')"
+    countSql += " AND p.ship_date IS NOT NULL"
+    countSql += " AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3"
+  } else if (statusFilter === 'in_transit') {
+    countSql += ` AND p.states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`
+  } else if (statusFilter === 'delivered') {
+    countSql += " AND p.states = 'Final delivery'"
+  } else if (statusFilter === 'has_transfer') {
+    if (hasTransferNum) {
+      countSql += " AND p.transfer_num IS NOT NULL AND p.transfer_num != ''"
+    } else {
+      countSql += " AND 1=0"
+    }
+  }
   
-  const countParams = params.slice(0) // 复制参数数组，排除分页参数
   const countResult = await query<{ total: string | number }>(countSql, countParams)
   const total = Number(countResult[0]?.total) || 0
 
@@ -221,8 +277,8 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
 
   const dateWhereClause = dateConditions.length > 0 ? ` AND ${dateConditions.join(' AND ')}` : ''
 
-  // 检查转单号字段是否存在
-  const { hasTransferNum } = await checkLogisticsNewFields()
+  // 检查转单号字段是否存在（使用缓存）
+  const { hasTransferNum } = await getLogisticsFields()
 
   // 优化：使用单个查询合并所有统计，使用 FILTER 子句
   const statsSql = `
