@@ -30,20 +30,9 @@ export function DateRangePicker({
   className,
   placeholder = "选择日期范围",
 }: DateRangePickerProps) {
-  // 获取当月第一天至今
-  const getCurrentMonthRange = (): { from: Date; to: Date } => {
-    const today = new Date()
-    const year = today.getFullYear()
-    const month = today.getMonth()
-    const firstDay = new Date(year, month, 1)
-    // 结束日期为今天（当月至今）
-    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-    return { from: firstDay, to: todayDate }
-  }
-
   // 将字符串日期转换为 Date 对象
-  const fromDate = dateFrom ? new Date(dateFrom) : undefined
-  const toDate = dateTo ? new Date(dateTo) : undefined
+  const fromDate = dateFrom && dateFrom.trim() ? new Date(dateFrom) : undefined
+  const toDate = dateTo && dateTo.trim() ? new Date(dateTo) : undefined
   
   const [date, setDate] = React.useState<DateRange | undefined>(
     fromDate && toDate
@@ -53,36 +42,15 @@ export function DateRangePicker({
       : undefined
   )
 
-  // 检查日期是否为空（包括空字符串）
-  const isDateEmpty = (dateStr?: string): boolean => {
-    return !dateStr || dateStr.trim() === ''
-  }
-
-  // 初始化：如果没有传入日期，默认选中当月至今
-  React.useEffect(() => {
-    if (isDateEmpty(dateFrom) && isDateEmpty(dateTo) && onDateChange) {
-      const monthRange = getCurrentMonthRange()
-      const fromStr = format(monthRange.from, 'yyyy-MM-dd')
-      const toStr = format(monthRange.to, 'yyyy-MM-dd')
-      onDateChange(fromStr, toStr)
-      setDate({ from: monthRange.from, to: monthRange.to })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // 只在组件挂载时执行一次
-
   // 当外部传入的日期变化时，更新内部状态
   React.useEffect(() => {
-    const from = !isDateEmpty(dateFrom) ? new Date(dateFrom!) : undefined
-    const to = !isDateEmpty(dateTo) ? new Date(dateTo!) : undefined
+    const from = dateFrom && dateFrom.trim() ? new Date(dateFrom) : undefined
+    const to = dateTo && dateTo.trim() ? new Date(dateTo) : undefined
     
     if (from && to) {
       setDate({ from, to })
     } else if (from) {
       setDate({ from, to: undefined })
-    } else if (isDateEmpty(dateFrom) && isDateEmpty(dateTo)) {
-      // 如果外部清空了日期，重新设置为当月至今
-      const monthRange = getCurrentMonthRange()
-      setDate({ from: monthRange.from, to: monthRange.to })
     } else {
       setDate(undefined)
     }
