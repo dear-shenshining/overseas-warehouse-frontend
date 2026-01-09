@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition, useRef } from "react"
-import { Package, TrendingUp, Menu, X, Warehouse, ChevronRight, BarChart3, Clock, History, RefreshCw } from "lucide-react"
+import { Package, TrendingUp, Menu, X, Warehouse, ChevronRight, BarChart3, Clock, History, RefreshCw, LogOut, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -16,13 +16,17 @@ import SlowMovingInventory from "@/components/slow-moving-inventory"
 import TaskTimeline from "@/components/task-timeline"
 import HistoryTasks from "@/components/history-tasks"
 import { refreshTaskTable } from "@/app/actions/inventory"
+import { logout } from "@/app/actions/auth"
+import { useRouter } from "next/navigation"
 
 export default function LogisticsPage() {
+  const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activePage, setActivePage] = useState<"overseas" | "inventory" | "profit">("overseas")
   const [inventorySubMenu, setInventorySubMenu] = useState<"overview" | "task" | "history">("overview")
   const [inventorySubMenuOpen, setInventorySubMenuOpen] = useState(true) // 控制子菜单展开/收起
   const [isRefreshing, startRefresh] = useTransition()
+  const [username, setUsername] = useState<string | null>(null)
   // 负责人列表（写死，从 per_charge 表中获取的所有负责人）
   const chargeList = ['宁一南', '吴安格', '朱梦婷', '老款下架', '姚吕敏', '重新上架', '金张倩']
   const [selectedCharge, setSelectedCharge] = useState<string>("")
@@ -48,6 +52,32 @@ export default function LogisticsPage() {
   }, [overseasLastUpdateTime])
 
   // 负责人列表已写死，不再需要从数据库获取
+
+  // 获取用户名
+  useEffect(() => {
+    // 从 cookie 中读取用户名
+    const getCookie = (name: string) => {
+      const value = `; ${document.cookie}`
+      const parts = value.split(`; ${name}=`)
+      if (parts.length === 2) return parts.pop()?.split(';').shift()
+      return null
+    }
+    const user = getCookie('username')
+    if (user) {
+      setUsername(decodeURIComponent(user))
+    }
+  }, [])
+
+  // 处理登出
+  const handleLogout = async () => {
+    try {
+      await logout()
+      router.push('/login')
+      router.refresh()
+    } catch (error) {
+      console.error('登出失败:', error)
+    }
+  }
 
   return (
     <div className="flex h-screen bg-background">
@@ -154,6 +184,24 @@ export default function LogisticsPage() {
               <span className="font-medium">日利润报表</span>
             </button>
           </nav>
+
+          {/* 用户信息和登出 */}
+          <div className="p-4 border-t border-sidebar-border">
+            {username && (
+              <div className="flex items-center gap-2 mb-3 px-2 py-1 text-sm text-sidebar-foreground/70">
+                <User className="h-4 w-4" />
+                <span className="truncate">{username}</span>
+              </div>
+            )}
+            <Button
+              variant="ghost"
+              className="w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent/50"
+              onClick={handleLogout}
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              <span>登出</span>
+            </Button>
+          </div>
         </div>
       </aside>
 
