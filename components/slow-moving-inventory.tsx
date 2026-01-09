@@ -27,12 +27,11 @@ export default function SlowMovingInventory() {
   const [statistics, setStatistics] = useState({
     normal_sales: 0,
     over_15_days: 0,
-    no_sales: 0,
     negative_inventory: 0,
     has_inventory_no_sales: 0,
   })
   const [error, setError] = useState<string | null>(null)
-  const [labelFilter, setLabelFilter] = useState<'normal' | 4 | 2 | 5 | '2_not_1' | null>(null)
+  const [labelFilter, setLabelFilter] = useState<'normal' | 4 | 5 | '2_not_1' | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<{
@@ -44,7 +43,7 @@ export default function SlowMovingInventory() {
   const pageSize = 50
 
   // 加载库存数据
-  const loadInventoryData = async (searchSku?: string, filter?: 'normal' | 4 | 2 | 5 | '2_not_1' | null) => {
+  const loadInventoryData = async (searchSku?: string, filter?: 'normal' | 4 | 5 | '2_not_1' | null) => {
     try {
       setLoading(true)
       setError(null)
@@ -92,7 +91,7 @@ export default function SlowMovingInventory() {
   }
 
   // 处理卡片点击筛选
-  const handleCardClick = (filterType: 'normal' | 4 | 2 | 5 | '2_not_1' | null) => {
+  const handleCardClick = (filterType: 'normal' | 4 | 5 | '2_not_1' | null) => {
     // 如果点击的是当前已选中的卡片，则取消筛选
     if (labelFilter === filterType) {
       setLabelFilter(null)
@@ -311,7 +310,7 @@ export default function SlowMovingInventory() {
       )}
 
       {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card
           className={`p-6 cursor-pointer transition-all hover:shadow-md ${
             labelFilter === 'normal' ? 'ring-2 ring-chart-2 bg-chart-2/5' : ''
@@ -342,23 +341,6 @@ export default function SlowMovingInventory() {
             <div>
               <p className="text-sm text-muted-foreground">在售天数超15天</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.over_15_days}</p>
-            </div>
-          </div>
-        </Card>
-
-        <Card
-          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
-            labelFilter === 2 ? 'ring-2 ring-chart-3 bg-chart-3/5' : ''
-          }`}
-          onClick={() => handleCardClick(2)}
-        >
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-chart-3/10 rounded-lg">
-              <TrendingDown className="h-6 w-6 text-chart-3" />
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">无销量</p>
-              <p className="text-2xl font-semibold text-foreground">{statistics.no_sales}</p>
             </div>
           </div>
         </Card>

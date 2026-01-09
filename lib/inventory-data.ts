@@ -440,7 +440,6 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
 export async function getInventoryStatistics(): Promise<{
   normal_sales: number // label不包含1、2、4、5的数量（正常销售）
   over_15_days: number // label包含4的数量（在售天数超15天）
-  no_sales: number // label包含2的数量（无销量）
   negative_inventory: number // label包含5的数量（库存待冲平）
   has_inventory_no_sales: number // label包含2但不包含1的数量（有库存无销量）
 }> {
@@ -451,12 +450,6 @@ export async function getInventoryStatistics(): Promise<{
       "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[4]'::jsonb"
     )
     const over_15_days = Number(over15DaysResult[0]?.count) || 0
-
-    // 统计label包含2的数量（无销量）
-    const noSalesResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[2]'::jsonb"
-    )
-    const no_sales = Number(noSalesResult[0]?.count) || 0
 
     // 统计label包含5的数量（库存待冲平）
     const negativeInventoryResult = await query<{ count: string | number }>(
@@ -479,7 +472,6 @@ export async function getInventoryStatistics(): Promise<{
     return {
       normal_sales,
       over_15_days,
-      no_sales,
       negative_inventory,
       has_inventory_no_sales,
     }
@@ -490,7 +482,6 @@ export async function getInventoryStatistics(): Promise<{
       const allData = await query<any>('SELECT label FROM inventory')
       let normal_sales = 0
       let over_15_days = 0
-      let no_sales = 0
       let negative_inventory = 0
       let has_inventory_no_sales = 0
 
@@ -510,7 +501,6 @@ export async function getInventoryStatistics(): Promise<{
             normal_sales++
           }
           if (labels.includes(4)) over_15_days++
-          if (labels.includes(2)) no_sales++
           if (labels.includes(5)) negative_inventory++
           // label包含2但不包含1且不包含5（有库存无销量）
           if (labels.includes(2) && !labels.includes(1) && !labels.includes(5)) {
@@ -522,10 +512,10 @@ export async function getInventoryStatistics(): Promise<{
         }
       })
 
-      return { normal_sales, over_15_days, no_sales, negative_inventory, has_inventory_no_sales }
+      return { normal_sales, over_15_days, negative_inventory, has_inventory_no_sales }
     } catch (fallbackError) {
       console.error('备用统计方法失败:', fallbackError)
-      return { normal_sales: 0, over_15_days: 0, no_sales: 0, negative_inventory: 0, has_inventory_no_sales: 0 }
+      return { normal_sales: 0, over_15_days: 0, negative_inventory: 0, has_inventory_no_sales: 0 }
     }
   }
 }
@@ -533,12 +523,12 @@ export async function getInventoryStatistics(): Promise<{
 /**
  * 获取所有库存数据
  * @param searchSku 搜索SKU（可选）
- * @param labelFilter 标签筛选（可选）：'normal'=正常销售，4=在售天数超15天，2=无销量，5=库存待冲平，'2_not_1'=有库存无销量
+ * @param labelFilter 标签筛选（可选）：'normal'=正常销售，4=在售天数超15天，5=库存待冲平，'2_not_1'=有库存无销量
  * @returns 库存数据数组
  */
 export async function getInventoryData(
   searchSku?: string,
-  labelFilter?: 'normal' | 4 | 2 | 5 | '2_not_1'
+  labelFilter?: 'normal' | 4 | 5 | '2_not_1'
 ): Promise<InventoryRecord[]> {
   try {
     let sql =
@@ -561,7 +551,7 @@ export async function getInventoryData(
       } else if (labelFilter === '2_not_1') {
         // 特殊筛选：label包含2但不包含1且不包含5（有库存无销量）
         sql += ` AND (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)`
-      } else {
+      } else if (labelFilter === 4 || labelFilter === 5) {
         // 普通筛选：label包含指定值
         sql += ` AND (label::jsonb @> '[${labelFilter}]'::jsonb)`
       }
@@ -594,9 +584,11 @@ export async function getInventoryData(
         } else if (labelFilter === '2_not_1') {
           // label包含2但不包含1且不包含5（有库存无销量）
           return labels.includes(2) && !labels.includes(1) && !labels.includes(5)
-        } else {
+        } else if (labelFilter === 4 || labelFilter === 5) {
+          // 普通筛选：label包含指定值
           return labels.includes(labelFilter)
         }
+        return true
       })
     }
 

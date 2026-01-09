@@ -307,10 +307,10 @@ export async function importInventoryFile(
 /**
  * 获取库存数据
  * @param searchSku 搜索SKU（可选）
- * @param labelFilter 标签筛选（可选）：'normal'=正常销售，4=在售天数超15天，2=无销量，5=库存待冲平，'2_not_1'=有库存无销量
+ * @param labelFilter 标签筛选（可选）：'normal'=正常销售，4=在售天数超15天，5=库存待冲平，'2_not_1'=有库存无销量
  * @returns 库存数据
  */
-export async function fetchInventoryData(searchSku?: string, labelFilter?: 'normal' | 4 | 2 | 5 | '2_not_1') {
+export async function fetchInventoryData(searchSku?: string, labelFilter?: 'normal' | 4 | 5 | '2_not_1') {
   try {
     const { getInventoryData } = await import('@/lib/inventory-data')
     const data = await getInventoryData(searchSku, labelFilter)
@@ -348,7 +348,6 @@ export async function fetchInventoryStatistics() {
       data: {
         normal_sales: 0,
         over_15_days: 0,
-        no_sales: 0,
         negative_inventory: 0,
         has_inventory_no_sales: 0,
       },
