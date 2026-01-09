@@ -23,6 +23,9 @@ export const STATUS_MAPPING: Record<string, string> = {
   "Office closed. Retention.": "办公室关闭/滞留",
   "Retention": "滞留",
   "Absence. Attempted delivery.": "缺席/尝试投递",
+  "En route": "运输途中",
+  "Redirection": "运输途中",
+  "Investigation": "到达待取",
   // 如果状态不在映射表中，返回原值
 }
 
@@ -35,6 +38,11 @@ export function getStatusLabel(status: string): string {
   // 如果状态已经在映射表中，直接返回
   if (STATUS_MAPPING[status]) {
     return STATUS_MAPPING[status]
+  }
+  
+  // 处理包含 "En route" 的状态值（不区分大小写）
+  if (/en route/i.test(status)) {
+    return "运输途中"
   }
   
   // 如果状态已经是中文，直接返回
