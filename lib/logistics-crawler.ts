@@ -33,7 +33,7 @@ async function fetchPendingSearchNumbers(
   startId: number = 0, 
   batchSize: number = 50,
   filters?: {
-    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered'
+    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer'
     dateFrom?: string
     dateTo?: string
     searchNums?: string[]
@@ -65,7 +65,11 @@ async function fetchPendingSearchNumbers(
         whereConditions.push(`(states IS NULL OR states = '')`)
       } else if (statusFilter === 'delivered') {
         whereConditions.push(`states = 'Final delivery'`)
+      } else if (statusFilter === 'has_transfer') {
+        // 转单：有转单号的数据
+        whereConditions.push(`transfer_num IS NOT NULL AND transfer_num != ''`)
       }
+      // statusFilter === 'total' 时不添加任何状态筛选条件，显示全量数据
     } else {
       // 如果没有指定状态筛选，默认排除已完成和退回的状态（爬虫只处理待处理的）
       whereConditions.push(`(states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)`)
@@ -126,7 +130,11 @@ async function fetchPendingSearchNumbers(
         maxIdWhereWithParams.push(`(states IS NULL OR states = '')`)
       } else if (statusFilter === 'delivered') {
         maxIdWhereWithParams.push(`states = 'Final delivery'`)
+      } else if (statusFilter === 'has_transfer') {
+        // 转单：有转单号的数据
+        maxIdWhereWithParams.push(`transfer_num IS NOT NULL AND transfer_num != ''`)
       }
+      // statusFilter === 'total' 时不添加任何状态筛选条件，显示全量数据
     } else {
       // 如果没有指定状态筛选，默认排除已完成和退回的状态
       maxIdWhereWithParams.push(`(states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)`)

@@ -42,9 +42,11 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     online_abnormal: 0,
     not_queried: 0,
     delivered: 0,
+    total: 0,
+    has_transfer: 0,
   })
   const [error, setError] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | null>(null)
+  const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null>(null)
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
   const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
@@ -97,7 +99,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 加载物流数据（支持分页）
   const loadLogisticsData = async (
     searchNum?: string,
-    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | null,
+    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null,
     page: number = 1
   ) => {
     try {
@@ -149,6 +151,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         setStatistics({
           ...result.data,
           not_queried: result.data.not_queried ?? 0,
+          total: result.data.total ?? 0,
+          has_transfer: result.data.has_transfer ?? 0,
         })
       } else {
         console.error('📊 统计数据加载失败:', result.error)
@@ -204,6 +208,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           setStatistics({
             ...statsResult.value.data,
             not_queried: statsResult.value.data.not_queried ?? 0,
+            total: statsResult.value.data.total ?? 0,
+            has_transfer: statsResult.value.data.has_transfer ?? 0,
           })
         } else {
           console.error("加载统计数据失败:", statsResult.status === 'rejected' ? statsResult.reason : statsResult.value)
@@ -220,6 +226,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             online_abnormal: 0,
             not_queried: 0,
             delivered: 0,
+            total: 0,
+            has_transfer: 0,
           })
       } finally {
         setLoading(false)
@@ -229,7 +237,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     loadInitialData()
   }, [statusFilter, dateFrom, dateTo])
 
-  // 解析多个货运单号（支持多种分隔符）
+  // 解析多个发货单号（支持多种分隔符）
   const parseSearchNumbers = (input: string): string[] => {
     if (!input.trim()) return []
     
@@ -294,7 +302,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   }
 
   // 处理卡片点击筛选
-  const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | null) => {
+  const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null) => {
     // 如果点击的是当前已选中的卡片，则取消筛选
     if (statusFilter === filterType) {
       setStatusFilter(null)
@@ -702,48 +710,78 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   }))
 
   // 导出数据功能（导出所有筛选后的数据，不是当前页）
-  const handleExport = () => {
-    if (logisticsData.length === 0) {
-      alert("没有数据可导出")
-      return
-    }
-
+  const handleExport = async () => {
     try {
-      // 准备导出数据
-      const exportData = logisticsData.map((record) => ({
-        货运单号: record.search_num,
+      // 显示加载提示（使用console而不是alert，避免阻塞）
+      console.log("正在准备导出数据，请稍候...")
+      
+      // 获取所有筛选后的数据（不分页，使用很大的pageSize）
+      const result = await fetchLogisticsData(
+        searchQuery || undefined,
+        statusFilter || undefined,
+        dateFrom && dateFrom.trim() ? dateFrom : undefined,
+        dateTo && dateTo.trim() ? dateTo : undefined,
+        1, // 从第1页开始
+        100000 // 使用很大的pageSize来获取所有数据
+      )
+
+      if (!result.success) {
+        alert(`导出失败：${result.error || "未知错误"}`)
+        return
+      }
+
+      if (result.data.length === 0) {
+        alert("没有数据可导出")
+        return
+      }
+
+      // 准备导出数据（订单号放在第一列）
+      const exportData = result.data.map((record) => ({
+        订单号: record.order_num || '',
+        发货单号: record.search_num,
         状态: getStatusLabel(record.states),
         发货日期: record.Ship_date 
           ? new Date(record.Ship_date).toLocaleDateString('zh-CN')
-          : '-',
-        发货渠道: record.channel || '-',
+          : '',
+        发货渠道: record.channel || '',
+        转单号: record.transfer_num || '',
+        转单日期: record.transfer_date 
+          ? new Date(record.transfer_date).toLocaleDateString('zh-CN')
+          : '',
+        备注: record.notes || '',
       }))
 
       // 创建工作簿
       const wb = XLSX.utils.book_new()
       const ws = XLSX.utils.json_to_sheet(exportData)
 
-      // 设置列宽
+      // 设置列宽（订单号在第一列）
       const colWidths = [
-        { wch: 20 }, // 货运单号
+        { wch: 20 }, // 订单号
+        { wch: 20 }, // 发货单号
         { wch: 15 }, // 状态
         { wch: 15 }, // 发货日期
         { wch: 15 }, // 发货渠道
+        { wch: 20 }, // 转单号
+        { wch: 15 }, // 转单日期
+        { wch: 30 }, // 备注
       ]
       ws['!cols'] = colWidths
 
       // 添加工作表到工作簿
-      XLSX.utils.book_append_sheet(wb, ws, "货运数据")
+      XLSX.utils.book_append_sheet(wb, ws, "发货数据")
 
-      // 生成文件名：当前日期+货运状况.xlsx
+      // 生成文件名：当前日期+发货状况.xlsx
       const today = new Date()
       const year = today.getFullYear()
       const month = String(today.getMonth() + 1).padStart(2, '0')
       const day = String(today.getDate()).padStart(2, '0')
-      const fileName = `${year}-${month}-${day}货运状况.xlsx`
+      const fileName = `${year}-${month}-${day}发货状况.xlsx`
 
       // 导出文件
       XLSX.writeFile(wb, fileName)
+      
+      console.log(`✅ 成功导出 ${exportData.length} 条记录`)
     } catch (error: any) {
       console.error("导出数据失败:", error)
       alert(`导出数据失败: ${error.message || "未知错误"}`)
@@ -761,7 +799,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               <div className="flex-1 relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="输入货运单号查询（支持多个，用空格、逗号、换行分隔）..."
+                  placeholder="输入发货单号查询（支持多个，用空格、逗号、换行分隔）..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyPress={handleKeyPress}
@@ -829,6 +867,23 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       <div className="flex gap-4">
         <Card 
           className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
+            statusFilter === 'total' ? 'ring-2 ring-purple-500 bg-purple-50' : ''
+          }`}
+          onClick={() => handleCardClick('total')}
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-purple-100 rounded-lg">
+              <Package className="h-6 w-6 text-purple-600" />
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">总发货</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.total}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card 
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
             statusFilter === 'delivered' ? 'ring-2 ring-green-500 bg-green-50' : ''
           }`}
           onClick={() => handleCardClick('delivered')}
@@ -872,7 +927,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               <MapPin className="h-6 w-6 text-chart-2" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">退回/异常</p>
+              <p className="text-sm text-muted-foreground">投递失败</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.returned}</p>
             </div>
           </div>
@@ -925,6 +980,23 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             <div>
               <p className="text-sm text-muted-foreground">未查询</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.not_queried}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
+            statusFilter === 'has_transfer' ? 'ring-2 ring-orange-500 bg-orange-50' : ''
+          }`}
+          onClick={() => handleCardClick('has_transfer')}
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-orange-100 rounded-lg">
+              <RefreshCw className="h-6 w-6 text-orange-600" />
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">转单</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.has_transfer}</p>
             </div>
           </div>
         </Card>
@@ -1026,13 +1098,13 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
               {searchResult && (
                 <div className="mt-4 space-y-2">
                   <p className="text-sm">
-                    输入 <span className="font-semibold">{searchResult.total}</span> 个货运单号，
-                    搜索到 <span className="font-semibold text-green-600">{searchResult.found}</span> 个货运单号，
-                    <span className="font-semibold text-red-600">{searchResult.notFound.length}</span> 个货运单号未搜索到
+                    输入 <span className="font-semibold">{searchResult.total}</span> 个发货单号，
+                    搜索到 <span className="font-semibold text-green-600">{searchResult.found}</span> 个发货单号，
+                    <span className="font-semibold text-red-600">{searchResult.notFound.length}</span> 个发货单号未搜索到
                   </p>
                   {searchResult.notFound.length > 0 && (
                     <div className="mt-4">
-                      <p className="text-sm font-medium mb-2">未搜索到的货运单号：</p>
+                      <p className="text-sm font-medium mb-2">未搜索到的发货单号：</p>
                       <div className="max-h-40 overflow-y-auto bg-muted p-2 rounded">
                         <p className="text-xs font-mono break-all">{searchResult.notFound.join(', ')}</p>
                       </div>
@@ -1087,7 +1159,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             <thead className="bg-muted/50 border-b border-border sticky top-0">
               <tr>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">订单号</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">货运单号</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">发货单号</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">转单号</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">状态</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">发货日期</th>
@@ -1146,7 +1218,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                         )}
                       </td>
                       
-                      {/* 货运单号 */}
+                      {/* 发货单号 */}
                       <td className="px-6 py-4 text-sm font-mono text-foreground">{record.search_num}</td>
                       
                       {/* 转单号 */}

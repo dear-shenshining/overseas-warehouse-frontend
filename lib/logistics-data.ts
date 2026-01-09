@@ -12,6 +12,7 @@ export interface LogisticsRecord {
   Ship_date: string | null
   channel: string | null
   transfer_num: string | null
+  transfer_date: string | null
   order_num: string | null
   notes: string | null
 }
@@ -23,6 +24,8 @@ export interface LogisticsStatistics {
   online_abnormal: number // 上网异常：未上网且发货日期距今超过3天
   not_queried: number // 未查询：states为空
   delivered: number // 成功签收
+  total: number // 总发货：全量数据
+  has_transfer: number // 转单：有转单号的数据
 }
 
 /**
@@ -36,14 +39,14 @@ export interface LogisticsStatistics {
  */
 export async function getLogisticsData(
   searchNum?: string,
-  statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered',
+  statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer',
   dateFrom?: string,
   dateTo?: string,
   page: number = 1,
   pageSize: number = 50
 ): Promise<{ data: LogisticsRecord[], total: number }> {
   // 检查新字段是否存在
-  const { hasTransferNum, hasOrderNum, hasNotes } = await checkLogisticsNewFields()
+  const { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate } = await checkLogisticsNewFields()
   
   // 根据字段是否存在构建SELECT语句
   const selectFields = [
@@ -58,6 +61,12 @@ export async function getLogisticsData(
     selectFields.push('p.transfer_num')
   } else {
     selectFields.push('NULL::VARCHAR as transfer_num')
+  }
+  
+  if (hasTransferDate) {
+    selectFields.push('p.transfer_date')
+  } else {
+    selectFields.push('NULL::TIMESTAMP as transfer_date')
   }
   
   if (hasOrderNum) {
@@ -147,7 +156,16 @@ export async function getLogisticsData(
   } else if (statusFilter === 'delivered') {
     // 成功签收：Final delivery
     sql += " AND COALESCE(t.states, p.states) = 'Final delivery'"
+  } else if (statusFilter === 'has_transfer') {
+    // 转单：有转单号的数据
+    if (hasTransferNum) {
+      sql += " AND p.transfer_num IS NOT NULL AND p.transfer_num != ''"
+    } else {
+      // 如果字段不存在，返回空结果
+      sql += " AND 1=0"
+    }
   }
+  // statusFilter === 'total' 时不添加任何筛选条件，显示全量数据
 
   sql += ' ORDER BY p.ship_date DESC, p.id DESC'
 
@@ -203,9 +221,13 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
 
   const dateWhereClause = dateConditions.length > 0 ? ` AND ${dateConditions.join(' AND ')}` : ''
 
+  // 检查转单号字段是否存在
+  const { hasTransferNum } = await checkLogisticsNewFields()
+
   // 优化：使用单个查询合并所有统计，使用 FILTER 子句
   const statsSql = `
     SELECT 
+      COUNT(*) as total,
       COUNT(*) FILTER (
         WHERE states IN ('Returned to Sender', 'Office closed. Retention.', 'Absence. Attempted delivery.')
       ) as returned,
@@ -225,29 +247,36 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
       ) as not_queried,
       COUNT(*) FILTER (
         WHERE states = 'Final delivery'
-      ) as delivered
+      ) as delivered,
+      ${hasTransferNum ? `COUNT(*) FILTER (
+        WHERE transfer_num IS NOT NULL AND transfer_num != ''
+      ) as has_transfer` : '0 as has_transfer'}
     FROM post_searchs
     WHERE 1=1${dateWhereClause}
   `
 
   const statsResult = await query<{
+    total: string | number
     returned: string | number
     not_online: string | number
     in_transit: string | number
     online_abnormal: string | number
     not_queried: string | number
     delivered: string | number
+    has_transfer: string | number
   }>(statsSql, dateParams.length > 0 ? dateParams : [])
 
   const result = statsResult[0] || {}
 
   return {
+    total: Number(result.total) || 0,
     in_transit: Number(result.in_transit) || 0,
     returned: Number(result.returned) || 0,
     not_online: Number(result.not_online) || 0,
     online_abnormal: Number(result.online_abnormal) || 0,
     not_queried: Number(result.not_queried) || 0,
     delivered: Number(result.delivered) || 0,
+    has_transfer: Number(result.has_transfer) || 0,
   }
 }
 

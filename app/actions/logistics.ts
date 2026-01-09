@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 
 export async function fetchLogisticsData(
   searchNum?: string,
-  statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered',
+  statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer',
   dateFrom?: string,
   dateTo?: string,
   page: number = 1,
@@ -79,6 +79,8 @@ export async function fetchLogisticsStatistics(dateFrom?: string, dateTo?: strin
         online_abnormal: 0,
         not_queried: 0,
         delivered: 0,
+        total: 0,
+        has_transfer: 0,
       },
     }
   }
@@ -142,7 +144,7 @@ export async function importLogisticsFile(formData: FormData) {
 export async function updateLogisticsStatus(
   startId?: number,
   filters?: {
-    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered'
+    statusFilter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer'
     dateFrom?: string
     dateTo?: string
     searchNums?: string[]

@@ -31,17 +31,19 @@ export async function checkLogisticsNewFields(): Promise<{
   hasTransferNum: boolean
   hasOrderNum: boolean
   hasNotes: boolean
+  hasTransferDate: boolean
 }> {
   try {
-    const [hasTransferNum, hasOrderNum, hasNotes] = await Promise.all([
+    const [hasTransferNum, hasOrderNum, hasNotes, hasTransferDate] = await Promise.all([
       checkColumnExists('post_searchs', 'transfer_num'),
       checkColumnExists('post_searchs', 'order_num'),
       checkColumnExists('post_searchs', 'notes'),
+      checkColumnExists('post_searchs', 'transfer_date'),
     ])
     
-    return { hasTransferNum, hasOrderNum, hasNotes }
+    return { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate }
   } catch (error) {
     console.error('检查新字段失败:', error)
-    return { hasTransferNum: false, hasOrderNum: false, hasNotes: false }
+    return { hasTransferNum: false, hasOrderNum: false, hasNotes: false, hasTransferDate: false }
   }
 }

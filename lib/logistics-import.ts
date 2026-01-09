@@ -219,101 +219,329 @@ export async function importLogisticsData(
       }
     }
 
-    // 简化：先使用逐条插入确保能工作，后续再优化批量插入
     let inserted = 0
+    let updated = 0
     let skipped = 0
 
     console.log(`开始导入 ${orderData.length} 条记录...`)
 
-    // 先批量查询哪些记录已存在（用于统计）
+    // 先批量查询已存在的记录，获取转单号和备注用于比较
     const allSearchNums = orderData.map(item => item.shipping_num)
     console.log('查询已存在的记录...')
-    const existingResult = await query<{ search_num: string }>(
-      `SELECT search_num FROM post_searchs WHERE search_num = ANY($1::text[])`,
-      [allSearchNums]
-    )
-    const existingSet = new Set(existingResult.map(r => r.search_num))
-    console.log(`找到 ${existingSet.size} 条已存在的记录`)
-
+    
     // 检查新字段是否存在（只检查一次，提高性能）
     const { checkLogisticsNewFields } = await import('./check-table-structure')
-    const { hasOrderNum, hasTransferNum, hasNotes } = await checkLogisticsNewFields()
+    const { hasOrderNum, hasTransferNum, hasNotes, hasTransferDate } = await checkLogisticsNewFields()
     
-    // 构建基础字段列表
+    // 构建查询字段
+    const selectFields = ['search_num']
+    if (hasTransferNum) selectFields.push('transfer_num')
+    if (hasNotes) selectFields.push('notes')
+    
+    const existingResult = await query<{ 
+      search_num: string
+      transfer_num?: string | null
+      notes?: string | null
+    }>(
+      `SELECT ${selectFields.join(', ')} FROM post_searchs WHERE search_num = ANY($1::text[])`,
+      [allSearchNums]
+    )
+    
+    // 构建已存在记录的映射表，方便快速查找
+    const existingMap = new Map<string, { transfer_num?: string | null, notes?: string | null }>()
+    for (const record of existingResult) {
+      existingMap.set(record.search_num, {
+        transfer_num: record.transfer_num,
+        notes: record.notes,
+      })
+    }
+    console.log(`找到 ${existingMap.size} 条已存在的记录`)
+
+    // 构建基础字段列表（用于插入新记录）
     const baseFields = ['search_num', 'ship_date', 'channel']
     const allFields = [...baseFields]
     if (hasOrderNum) allFields.push('order_num')
     if (hasTransferNum) allFields.push('transfer_num')
     if (hasNotes) allFields.push('notes')
     
-    // 构建基础SQL模板
-    const placeholders = allFields.map((_, i) => `$${i + 1}`).join(', ')
-    const sqlTemplate = `
-      INSERT INTO post_searchs (${allFields.join(', ')})
-      VALUES (${placeholders})
-      ON CONFLICT (search_num) 
-      DO NOTHING
-    `
+    // 分类数据：新记录、需要更新的记录、无需更新的记录
+    const newRecords: typeof orderData = []
+    const updateRecords: Array<{
+      item: typeof orderData[0]
+      existingRecord: { transfer_num?: string | null, notes?: string | null }
+      transferNumChanged: boolean
+      notesChanged: boolean
+    }> = []
+    const skipRecords: typeof orderData = []
 
-    // 逐条插入（确保稳定性）
-    for (let i = 0; i < orderData.length; i++) {
-      const item = orderData[i]
-      try {
-        console.log(`[${i + 1}/${orderData.length}] 处理: ${item.shipping_num}`)
+    console.log('分类数据中...')
+    for (const item of orderData) {
+      const existingRecord = existingMap.get(item.shipping_num)
+      
+      if (existingRecord) {
+        // 已存在的记录，检查是否需要更新
+        let transferNumChanged = false
+        let notesChanged = false
 
-        // 构建参数数组
-        const values: any[] = [item.shipping_num, item.ship_date, item.channel]
-        if (hasOrderNum) values.push(item.order_num)
-        if (hasTransferNum) values.push(item.transfer_num)
-        if (hasNotes) values.push(item.notes)
-        
-        const sql = sqlTemplate
+        // 检查转单号是否不一致
+        if (hasTransferNum) {
+          const existingTransferNum = existingRecord.transfer_num || null
+          const newTransferNum = item.transfer_num || null
+          
+          transferNumChanged = 
+            (existingTransferNum !== newTransferNum) &&
+            !(existingTransferNum === null && newTransferNum === null) &&
+            !(existingTransferNum === '' && newTransferNum === null) &&
+            !(existingTransferNum === null && newTransferNum === '') &&
+            newTransferNum !== null
+        }
 
-        console.log(`执行 SQL，参数:`, {
-          search_num: item.shipping_num,
-          ship_date: item.ship_date,
-          channel: item.channel,
-          order_num: item.order_num,
-          transfer_num: item.transfer_num,
-          notes: item.notes,
-        })
+        // 检查备注是否不一致
+        if (hasNotes) {
+          const existingNotes = existingRecord.notes || null
+          const newNotes = item.notes || null
+          
+          notesChanged = 
+            (existingNotes !== newNotes) &&
+            !(existingNotes === null && newNotes === null) &&
+            !(existingNotes === '' && newNotes === null) &&
+            !(existingNotes === null && newNotes === '')
+        }
 
-        const result = await execute(sql, values)
-
-        // 根据检查结果统计
-        // 注意：使用 DO NOTHING 后，已存在的记录不会插入，affectedRows = 0
-        if (existingSet.has(item.shipping_num)) {
-          // 已存在的记录，不做任何更新，跳过
-          skipped++
-          console.log(`⏭️ [${i + 1}] 跳过（已存在）: ${item.shipping_num}`)
-        } else if (result.affectedRows > 0) {
-          // 新插入的记录
-          inserted++
-          console.log(`✓ [${i + 1}] 新增: ${item.shipping_num}`)
+        if (transferNumChanged || notesChanged) {
+          updateRecords.push({ item, existingRecord, transferNumChanged, notesChanged })
         } else {
-          // 理论上不应该到这里，但为了安全起见
-          skipped++
-          console.log(`⏭️ [${i + 1}] 跳过: ${item.shipping_num}`)
+          skipRecords.push(item)
         }
-      } catch (itemError: any) {
-        console.error(`❌ [${i + 1}] 导入失败 ${item.shipping_num}:`, itemError)
-        console.error(`错误消息: ${itemError.message}`)
-        console.error(`错误代码: ${itemError.code}`)
-        console.error(`错误详情:`, JSON.stringify(itemError, null, 2))
-        if (itemError.stack) {
-          console.error(`错误堆栈:`, itemError.stack)
-        }
-        skipped++
+      } else {
+        // 新记录
+        newRecords.push(item)
       }
     }
 
+    console.log(`分类完成：新增 ${newRecords.length} 条，更新 ${updateRecords.length} 条，跳过 ${skipRecords.length} 条`)
+
+    // 批量插入新记录
+    if (newRecords.length > 0) {
+      console.log(`批量插入 ${newRecords.length} 条新记录...`)
+      const batchSize = 500 // 每批插入500条
+      
+      for (let i = 0; i < newRecords.length; i += batchSize) {
+        const batch = newRecords.slice(i, i + batchSize)
+        const valuesList: any[] = []
+        const placeholdersList: string[] = []
+        let paramIndex = 1
+
+        for (const item of batch) {
+          const values: any[] = [item.shipping_num, item.ship_date, item.channel]
+          if (hasOrderNum) values.push(item.order_num)
+          if (hasTransferNum) values.push(item.transfer_num)
+          if (hasNotes) values.push(item.notes)
+          
+          const placeholders = values.map((_, idx) => `$${paramIndex + idx}`).join(', ')
+          placeholdersList.push(`(${placeholders})`)
+          valuesList.push(...values)
+          paramIndex += values.length
+        }
+
+        const batchInsertSql = `
+          INSERT INTO post_searchs (${allFields.join(', ')})
+          VALUES ${placeholdersList.join(', ')}
+          ON CONFLICT (search_num) DO NOTHING
+        `
+
+        try {
+          const result = await execute(batchInsertSql, valuesList)
+          inserted += result.affectedRows || 0
+          console.log(`  ✓ 批量插入第 ${Math.floor(i / batchSize) + 1} 批，成功 ${result.affectedRows || 0} 条`)
+        } catch (error: any) {
+          console.error(`  ❌ 批量插入失败:`, error.message)
+          // 如果批量插入失败，尝试逐条插入
+          for (const item of batch) {
+            try {
+              const values: any[] = [item.shipping_num, item.ship_date, item.channel]
+              if (hasOrderNum) values.push(item.order_num)
+              if (hasTransferNum) values.push(item.transfer_num)
+              if (hasNotes) values.push(item.notes)
+              
+              const singleInsertSql = `
+                INSERT INTO post_searchs (${allFields.join(', ')})
+                VALUES (${values.map((_, idx) => `$${idx + 1}`).join(', ')})
+                ON CONFLICT (search_num) DO NOTHING
+              `
+              const singleResult = await execute(singleInsertSql, values)
+              if (singleResult.affectedRows > 0) {
+                inserted++
+              } else {
+                skipped++
+              }
+            } catch (singleError: any) {
+              console.error(`  ❌ 单条插入失败 ${item.shipping_num}:`, singleError.message)
+              skipped++
+            }
+          }
+        }
+      }
+    }
+
+    // 批量更新已存在的记录
+    if (updateRecords.length > 0) {
+      console.log(`批量更新 ${updateRecords.length} 条记录...`)
+      const batchSize = 200 // 每批更新200条
+      const currentDate = new Date().toISOString().split('T')[0]
+
+      for (let i = 0; i < updateRecords.length; i += batchSize) {
+        const batch = updateRecords.slice(i, i + batchSize)
+        
+        try {
+          // 按更新类型分组：只更新转单号、只更新备注、同时更新两者
+          const transferNumOnly = batch.filter(r => r.transferNumChanged && !r.notesChanged)
+          const notesOnly = batch.filter(r => !r.transferNumChanged && r.notesChanged)
+          const both = batch.filter(r => r.transferNumChanged && r.notesChanged)
+
+          // 批量更新：只更新转单号
+          if (transferNumOnly.length > 0 && hasTransferNum) {
+            const updateData = transferNumOnly.map(({ item }) => ({
+              search_num: item.shipping_num,
+              transfer_num: item.transfer_num,
+            }))
+
+            const valuesList = updateData.map((_, idx) => `($${idx * 2 + 1}, $${idx * 2 + 2})`).join(', ')
+            const params = updateData.flatMap(d => [d.search_num, d.transfer_num])
+            
+            const transferSql = `
+              UPDATE post_searchs p
+              SET 
+                transfer_num = v.transfer_num,
+                ${hasTransferDate ? 'transfer_date = CURRENT_DATE,' : ''}
+                states = NULL,
+                updated_at = CURRENT_TIMESTAMP
+              FROM (VALUES ${valuesList}) AS v(search_num, transfer_num)
+              WHERE p.search_num = v.search_num
+            `
+            
+            const transferResult = await execute(transferSql, params)
+            updated += transferResult.affectedRows || 0
+            console.log(`  ✓ 批量更新转单号 ${transferResult.affectedRows || 0} 条`)
+          }
+
+          // 批量更新：只更新备注
+          if (notesOnly.length > 0 && hasNotes) {
+            const updateData = notesOnly.map(({ item }) => ({
+              search_num: item.shipping_num,
+              notes: item.notes || null,
+            }))
+
+            const valuesList = updateData.map((_, idx) => `($${idx * 2 + 1}, $${idx * 2 + 2})`).join(', ')
+            const params = updateData.flatMap(d => [d.search_num, d.notes])
+            
+            const notesSql = `
+              UPDATE post_searchs p
+              SET 
+                notes = v.notes,
+                updated_at = CURRENT_TIMESTAMP
+              FROM (VALUES ${valuesList}) AS v(search_num, notes)
+              WHERE p.search_num = v.search_num
+            `
+            
+            const notesResult = await execute(notesSql, params)
+            updated += notesResult.affectedRows || 0
+            console.log(`  ✓ 批量更新备注 ${notesResult.affectedRows || 0} 条`)
+          }
+
+          // 批量更新：同时更新转单号和备注
+          if (both.length > 0 && hasTransferNum && hasNotes) {
+            const updateData = both.map(({ item }) => ({
+              search_num: item.shipping_num,
+              transfer_num: item.transfer_num,
+              notes: item.notes || null,
+            }))
+
+            const valuesList = updateData.map((_, idx) => `($${idx * 3 + 1}, $${idx * 3 + 2}, $${idx * 3 + 3})`).join(', ')
+            const params = updateData.flatMap(d => [d.search_num, d.transfer_num, d.notes])
+            
+            const bothSql = `
+              UPDATE post_searchs p
+              SET 
+                transfer_num = v.transfer_num,
+                ${hasTransferDate ? 'transfer_date = CURRENT_DATE,' : ''}
+                states = NULL,
+                notes = v.notes,
+                updated_at = CURRENT_TIMESTAMP
+              FROM (VALUES ${valuesList}) AS v(search_num, transfer_num, notes)
+              WHERE p.search_num = v.search_num
+            `
+            
+            const bothResult = await execute(bothSql, params)
+            updated += bothResult.affectedRows || 0
+            console.log(`  ✓ 批量更新转单号和备注 ${bothResult.affectedRows || 0} 条`)
+          }
+        } catch (error: any) {
+          console.error(`  ❌ 批量更新失败:`, error.message)
+          // 如果批量更新失败，尝试逐条更新
+          for (const { item, transferNumChanged, notesChanged } of batch) {
+            try {
+              const updateFields: string[] = []
+              const updateValues: any[] = []
+              let paramIdx = 1
+
+              if (transferNumChanged && hasTransferNum) {
+                updateFields.push(`transfer_num = $${paramIdx}`)
+                updateValues.push(item.transfer_num)
+                paramIdx++
+                
+                if (hasTransferDate) {
+                  updateFields.push(`transfer_date = $${paramIdx}`)
+                  updateValues.push(currentDate)
+                  paramIdx++
+                }
+                
+                updateFields.push(`states = $${paramIdx}`)
+                updateValues.push(null)
+                paramIdx++
+              }
+
+              if (notesChanged && hasNotes) {
+                updateFields.push(`notes = $${paramIdx}`)
+                updateValues.push(item.notes || null)
+                paramIdx++
+              }
+
+              if (updateFields.length > 0) {
+                updateFields.push(`updated_at = CURRENT_TIMESTAMP`)
+                updateValues.push(item.shipping_num)
+                
+                const singleUpdateSql = `
+                  UPDATE post_searchs 
+                  SET ${updateFields.join(', ')}
+                  WHERE search_num = $${paramIdx}
+                `
+                const singleResult = await execute(singleUpdateSql, updateValues)
+                if (singleResult.affectedRows > 0) {
+                  updated++
+                } else {
+                  skipped++
+                }
+              }
+            } catch (singleError: any) {
+              console.error(`  ❌ 单条更新失败 ${item.shipping_num}:`, singleError.message)
+              skipped++
+            }
+          }
+        }
+      }
+    }
+
+    // 统计跳过的记录
+    skipped += skipRecords.length
+
     return {
       success: true,
-      message: `导入完成：总计 ${orderData.length} 条，新增 ${inserted} 条，跳过 ${skipped} 条（已存在记录不做更新）`,
+      message: `导入完成：总计 ${orderData.length} 条，新增 ${inserted} 条，更新 ${updated} 条，跳过 ${skipped} 条`,
       stats: {
         total: orderData.length,
         inserted,
-        updated: 0, // 已改为不更新，保留字段以兼容前端
+        updated,
         skipped,
       },
     }
