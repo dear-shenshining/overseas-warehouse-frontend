@@ -47,7 +47,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     has_transfer: 0,
   })
   const [error, setError] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null>(null)
+  const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | null>(null)
+  const [hasTransferFilter, setHasTransferFilter] = useState<boolean>(false)
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
   const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
@@ -100,7 +101,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 加载物流数据（支持分页）
   const loadLogisticsData = async (
     searchNum?: string,
-    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null,
+    filter?: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | null,
     page: number = 1
   ) => {
     try {
@@ -112,7 +113,9 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         dateFrom && dateFrom.trim() ? dateFrom : undefined,
         dateTo && dateTo.trim() ? dateTo : undefined,
         page,
-        pageSize
+        pageSize,
+        false, // createdAtToday
+        hasTransferFilter // hasTransferFilter
       )
       if (result.success) {
         setLogisticsData(result.data)
@@ -173,14 +176,16 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
         // 并行加载数据和统计
         const [dataResult, statsResult] = await Promise.allSettled([
-          fetchLogisticsData(
-            undefined, 
-            statusFilter || undefined, 
-            dateFrom && dateFrom.trim() ? dateFrom : undefined,
-            dateTo && dateTo.trim() ? dateTo : undefined,
-            1, // page
-            pageSize
-          ),
+            fetchLogisticsData(
+              undefined, 
+              statusFilter || undefined, 
+              dateFrom && dateFrom.trim() ? dateFrom : undefined,
+              dateTo && dateTo.trim() ? dateTo : undefined,
+              1, // page
+              pageSize,
+              false, // createdAtToday
+              hasTransferFilter // hasTransferFilter
+            ),
           fetchLogisticsStatistics(
             dateFrom && dateFrom.trim() ? dateFrom : undefined,
             dateTo && dateTo.trim() ? dateTo : undefined
@@ -236,7 +241,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
 
     loadInitialData()
-  }, [statusFilter, dateFrom, dateTo])
+  }, [statusFilter, hasTransferFilter, dateFrom, dateTo])
 
   // 解析多个发货单号（支持多种分隔符）
   const parseSearchNumbers = (input: string): string[] => {
@@ -303,7 +308,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   }
 
   // 处理卡片点击筛选
-  const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null) => {
+  const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | null) => {
     // 如果点击的是当前已选中的卡片，则取消筛选
     if (statusFilter === filterType) {
       setStatusFilter(null)
@@ -313,9 +318,15 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     // 筛选条件改变时会触发 useEffect 重新加载，不需要手动调用
   }
 
+  // 处理转单卡片点击（可以与其他状态筛选组合）
+  const handleTransferCardClick = () => {
+    setHasTransferFilter(!hasTransferFilter)
+  }
+
   // 重置所有筛选
   const handleResetFilters = () => {
     setStatusFilter(null)
+    setHasTransferFilter(false)
     setDateFrom("")
     setDateTo("")
     setSearchQuery("")
@@ -553,6 +564,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           dateFrom: dateFrom && dateFrom.trim() ? dateFrom : undefined,
           dateTo: dateTo && dateTo.trim() ? dateTo : undefined,
           searchNums: searchQuery ? parseSearchNumbers(searchQuery) : undefined,
+          hasTransferFilter: hasTransferFilter || undefined,
         }
 
         const result = await updateLogisticsStatus(progress.lastProcessedId, filters)
@@ -724,7 +736,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         dateTo && dateTo.trim() ? dateTo : undefined,
         1, // 从第1页开始
         100000, // 使用很大的pageSize来获取所有数据
-        false // 不限制创建时间
+        false, // 不限制创建时间
+        hasTransferFilter // 转单筛选
       )
 
       if (!result.success) {
@@ -865,7 +878,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         dateTo && dateTo.trim() ? dateTo : undefined,
         1, // 从第1页开始
         100000, // 使用很大的pageSize来获取所有数据
-        true // 只导出今天创建的数据
+        true, // 只导出今天创建的数据
+        hasTransferFilter // 转单筛选
       )
 
       if (!result.success) {
@@ -1188,9 +1202,9 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
         <Card
           className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
-            statusFilter === 'has_transfer' ? 'ring-2 ring-orange-500 bg-orange-50' : ''
+            hasTransferFilter ? 'ring-2 ring-orange-500 bg-orange-50' : ''
           }`}
-          onClick={() => handleCardClick('has_transfer')}
+          onClick={handleTransferCardClick}
         >
           <div className="flex items-center gap-4">
             <div className="p-3 bg-orange-100 rounded-lg">

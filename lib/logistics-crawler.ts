@@ -37,6 +37,7 @@ async function fetchPendingSearchNumbers(
     dateFrom?: string
     dateTo?: string
     searchNums?: string[]
+    hasTransferFilter?: boolean
   }
 ): Promise<{
   items: Array<{ id: number; search_num: string; states: string | null }>
@@ -56,23 +57,30 @@ async function fetchPendingSearchNumbers(
       } else if (statusFilter === 'not_online') {
         whereConditions.push(`states IN ('Not registered', '未上网')`)
       } else if (statusFilter === 'online_abnormal') {
+        // 上网异常：未上网且（有转单号用转单日期，无转单号用发货日期）距今超过3天
         whereConditions.push(`states IN ('Not registered', '未上网')`)
-        whereConditions.push(`ship_date IS NOT NULL`)
-        whereConditions.push(`EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`)
+        whereConditions.push(`(
+          (transfer_num IS NOT NULL AND transfer_num != '' AND transfer_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - transfer_date))::INTEGER >= 3)
+          OR
+          ((transfer_num IS NULL OR transfer_num = '') AND ship_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3)
+        )`)
       } else if (statusFilter === 'in_transit') {
         whereConditions.push(`states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`)
       } else if (statusFilter === 'not_queried') {
         whereConditions.push(`(states IS NULL OR states = '')`)
       } else if (statusFilter === 'delivered') {
         whereConditions.push(`states = 'Final delivery'`)
-      } else if (statusFilter === 'has_transfer') {
-        // 转单：有转单号的数据
-        whereConditions.push(`transfer_num IS NOT NULL AND transfer_num != ''`)
       }
       // statusFilter === 'total' 时不添加任何状态筛选条件，显示全量数据
+      // statusFilter === 'has_transfer' 时只显示转单数据，不添加状态筛选
     } else {
       // 如果没有指定状态筛选，默认排除已完成和退回的状态（爬虫只处理待处理的）
       whereConditions.push(`(states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)`)
+    }
+
+    // 转单筛选（可以与状态筛选组合使用）
+    if (filters?.hasTransferFilter || filters?.statusFilter === 'has_transfer') {
+      whereConditions.push(`transfer_num IS NOT NULL AND transfer_num != ''`)
     }
 
     // 应用日期筛选
@@ -121,23 +129,30 @@ async function fetchPendingSearchNumbers(
       } else if (statusFilter === 'not_online') {
         maxIdWhereWithParams.push(`states IN ('Not registered', '未上网')`)
       } else if (statusFilter === 'online_abnormal') {
+        // 上网异常：未上网且（有转单号用转单日期，无转单号用发货日期）距今超过3天
         maxIdWhereWithParams.push(`states IN ('Not registered', '未上网')`)
-        maxIdWhereWithParams.push(`ship_date IS NOT NULL`)
-        maxIdWhereWithParams.push(`EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`)
+        maxIdWhereWithParams.push(`(
+          (transfer_num IS NOT NULL AND transfer_num != '' AND transfer_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - transfer_date))::INTEGER >= 3)
+          OR
+          ((transfer_num IS NULL OR transfer_num = '') AND ship_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3)
+        )`)
       } else if (statusFilter === 'in_transit') {
         maxIdWhereWithParams.push(`states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`)
       } else if (statusFilter === 'not_queried') {
         maxIdWhereWithParams.push(`(states IS NULL OR states = '')`)
       } else if (statusFilter === 'delivered') {
         maxIdWhereWithParams.push(`states = 'Final delivery'`)
-      } else if (statusFilter === 'has_transfer') {
-        // 转单：有转单号的数据
-        maxIdWhereWithParams.push(`transfer_num IS NOT NULL AND transfer_num != ''`)
       }
       // statusFilter === 'total' 时不添加任何状态筛选条件，显示全量数据
+      // statusFilter === 'has_transfer' 时只显示转单数据，不添加状态筛选
     } else {
       // 如果没有指定状态筛选，默认排除已完成和退回的状态
       maxIdWhereWithParams.push(`(states NOT IN ('Final delivery', 'Returned to sender') OR states IS NULL)`)
+    }
+    
+    // 转单筛选（可以与状态筛选组合使用）
+    if (filters?.hasTransferFilter || filters?.statusFilter === 'has_transfer') {
+      maxIdWhereWithParams.push(`transfer_num IS NOT NULL AND transfer_num != ''`)
     }
     
     if (filters?.dateFrom && filters.dateFrom.trim()) {

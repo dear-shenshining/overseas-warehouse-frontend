@@ -16,10 +16,11 @@ export async function fetchLogisticsData(
   dateTo?: string,
   page: number = 1,
   pageSize: number = 50,
-  createdAtToday?: boolean
+  createdAtToday?: boolean,
+  hasTransferFilter?: boolean
 ) {
   try {
-    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize, createdAtToday)
+    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize, createdAtToday, hasTransferFilter)
     return {
       success: true,
       data: result.data,
@@ -149,6 +150,7 @@ export async function updateLogisticsStatus(
     dateFrom?: string
     dateTo?: string
     searchNums?: string[]
+    hasTransferFilter?: boolean
   }
 ) {
   try {

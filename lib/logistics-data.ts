@@ -45,7 +45,8 @@ export async function getLogisticsData(
   dateTo?: string,
   page: number = 1,
   pageSize: number = 50,
-  createdAtToday?: boolean
+  createdAtToday?: boolean,
+  hasTransferFilter?: boolean
 ): Promise<{ data: LogisticsRecord[], total: number }> {
   // 检查新字段是否存在（使用缓存）
   const { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate } = await getLogisticsFields()
@@ -153,18 +154,32 @@ export async function getLogisticsData(
     // 未查询：states 为 null 或空字符串
     sql += " AND (COALESCE(t.states, p.states) IS NULL OR COALESCE(t.states, p.states) = '')"
   } else if (statusFilter === 'online_abnormal') {
-    // 上网异常：未上网且发货日期距今超过3天
+    // 上网异常：未上网且（有转单号用转单日期，无转单号用发货日期）距今超过3天
     sql += " AND COALESCE(t.states, p.states) IN ('Not registered', '未上网')"
-    sql += " AND p.ship_date IS NOT NULL"
-    sql += " AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3"
+    if (hasTransferNum) {
+      // 有转单号时，优先使用转单日期；无转单号时，使用发货日期
+      sql += ` AND (
+        (p.transfer_num IS NOT NULL AND p.transfer_num != '' AND p.transfer_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - p.transfer_date))::INTEGER >= 3)
+        OR
+        ((p.transfer_num IS NULL OR p.transfer_num = '') AND p.ship_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3)
+      )`
+    } else {
+      // 如果转单号字段不存在，只使用发货日期
+      sql += " AND p.ship_date IS NOT NULL"
+      sql += " AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3"
+    }
   } else if (statusFilter === 'in_transit') {
     // 运输中：除了 Final delivery、退回/异常、未上网 之外的所有状态（包括Retention，但不包括办公室关闭/滞留和缺席/尝试投递）
     sql += ` AND COALESCE(t.states, p.states) NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`
   } else if (statusFilter === 'delivered') {
     // 成功签收：Final delivery
     sql += " AND COALESCE(t.states, p.states) = 'Final delivery'"
-  } else if (statusFilter === 'has_transfer') {
-    // 转单：有转单号的数据
+  }
+  // statusFilter === 'total' 时不添加任何筛选条件，显示全量数据
+  // statusFilter === 'has_transfer' 时只显示转单数据，不添加状态筛选
+  
+  // 转单筛选（可以与状态筛选组合使用）
+  if (hasTransferFilter || statusFilter === 'has_transfer') {
     if (hasTransferNum) {
       sql += " AND p.transfer_num IS NOT NULL AND p.transfer_num != ''"
     } else {
@@ -172,7 +187,6 @@ export async function getLogisticsData(
       sql += " AND 1=0"
     }
   }
-  // statusFilter === 'total' 时不添加任何筛选条件，显示全量数据
 
   sql += ' ORDER BY p.ship_date DESC, p.id DESC'
 
@@ -228,14 +242,29 @@ export async function getLogisticsData(
   } else if (statusFilter === 'not_queried') {
     countSql += " AND (p.states IS NULL OR p.states = '')"
   } else if (statusFilter === 'online_abnormal') {
+    // 上网异常：未上网且（有转单号用转单日期，无转单号用发货日期）距今超过3天
     countSql += " AND p.states IN ('Not registered', '未上网')"
-    countSql += " AND p.ship_date IS NOT NULL"
-    countSql += " AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3"
+    if (hasTransferNum) {
+      // 有转单号时，优先使用转单日期；无转单号时，使用发货日期
+      countSql += ` AND (
+        (p.transfer_num IS NOT NULL AND p.transfer_num != '' AND p.transfer_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - p.transfer_date))::INTEGER >= 3)
+        OR
+        ((p.transfer_num IS NULL OR p.transfer_num = '') AND p.ship_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3)
+      )`
+    } else {
+      // 如果转单号字段不存在，只使用发货日期
+      countSql += " AND p.ship_date IS NOT NULL"
+      countSql += " AND EXTRACT(DAY FROM (CURRENT_DATE - p.ship_date))::INTEGER >= 3"
+    }
   } else if (statusFilter === 'in_transit') {
     countSql += ` AND p.states NOT IN ('Final delivery', 'Returned to Sender', 'Not registered', '退回', '异常', '退回/异常', '未上网', 'Office closed. Retention.', 'Absence. Attempted delivery.')`
   } else if (statusFilter === 'delivered') {
     countSql += " AND p.states = 'Final delivery'"
-  } else if (statusFilter === 'has_transfer') {
+  }
+  // statusFilter === 'has_transfer' 时只显示转单数据，不添加状态筛选
+  
+  // 转单筛选（可以与状态筛选组合使用）
+  if (hasTransferFilter || statusFilter === 'has_transfer') {
     if (hasTransferNum) {
       countSql += " AND p.transfer_num IS NOT NULL AND p.transfer_num != ''"
     } else {
@@ -307,8 +336,11 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
       ) as in_transit,
       COUNT(*) FILTER (
         WHERE states IN ('Not registered', '未上网')
-          AND ship_date IS NOT NULL
-          AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3
+          AND (
+            ${hasTransferNum ? `(transfer_num IS NOT NULL AND transfer_num != '' AND transfer_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - transfer_date))::INTEGER >= 3)
+            OR
+            ((transfer_num IS NULL OR transfer_num = '') AND ship_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3)` : `ship_date IS NOT NULL AND EXTRACT(DAY FROM (CURRENT_DATE - ship_date))::INTEGER >= 3`}
+          )
       ) as online_abnormal,
       COUNT(*) FILTER (
         WHERE states IS NULL OR states = ''
