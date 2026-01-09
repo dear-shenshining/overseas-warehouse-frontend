@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/pagination"
 import { fetchLogisticsData, fetchLogisticsStatistics, importLogisticsFile, updateLogisticsStatus, updateLogisticsField, batchSearchLogistics } from "@/app/actions/logistics"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { DateRangePicker } from "@/components/ui/date-range-picker"
 import type { LogisticsRecord } from "@/lib/logistics-data"
 import { getStatusLabel } from "@/lib/status-mapping"
 import * as XLSX from "xlsx"
@@ -771,12 +772,72 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       // 添加工作表到工作簿
       XLSX.utils.book_append_sheet(wb, ws, "发货数据")
 
-      // 生成文件名：当前日期+发货状况.xlsx
+      // 生成文件名：筛选日期（仅包括月日）+海外物流+筛选分类（若有）+当前年月日
+      // 例如：1.2-1.5海外物流三天未上网20260109.xlsx
+      
+      // 获取筛选分类的中文名称
+      const getFilterLabel = (filter: typeof statusFilter): string => {
+        const filterMap: Record<string, string> = {
+          'in_transit': '运输中',
+          'returned': '投递失败退回',
+          'not_online': '未上网',
+          'online_abnormal': '三天未上网',
+          'not_queried': '未查询',
+          'delivered': '成功签收',
+          'total': '总发货',
+          'has_transfer': '转单',
+        }
+        return filter ? filterMap[filter] || '' : ''
+      }
+
+      // 格式化日期为月日格式（例如：1.2）
+      const formatMonthDay = (dateStr: string): string => {
+        if (!dateStr) return ''
+        try {
+          const date = new Date(dateStr)
+          const month = date.getMonth() + 1
+          const day = date.getDate()
+          return `${month}.${day}`
+        } catch {
+          return ''
+        }
+      }
+
+      // 构建文件名各部分
+      const parts: string[] = []
+
+      // 1. 筛选日期（仅包括月日）
+      if (dateFrom && dateTo) {
+        const fromStr = formatMonthDay(dateFrom)
+        const toStr = formatMonthDay(dateTo)
+        if (fromStr && toStr) {
+          parts.push(`${fromStr}-${toStr}`)
+        }
+      } else if (dateFrom) {
+        const fromStr = formatMonthDay(dateFrom)
+        if (fromStr) {
+          parts.push(fromStr)
+        }
+      }
+
+      // 2. 海外物流（固定文本）
+      parts.push('海外物流')
+
+      // 3. 筛选分类（若有）
+      const filterLabel = getFilterLabel(statusFilter)
+      if (filterLabel) {
+        parts.push(filterLabel)
+      }
+
+      // 4. 当前年月日（例如：20260109）
       const today = new Date()
       const year = today.getFullYear()
       const month = String(today.getMonth() + 1).padStart(2, '0')
       const day = String(today.getDate()).padStart(2, '0')
-      const fileName = `${year}-${month}-${day}发货状况.xlsx`
+      parts.push(`${year}${month}${day}`)
+
+      // 组合文件名
+      const fileName = `${parts.join('')}.xlsx`
 
       // 导出文件
       XLSX.writeFile(wb, fileName)
@@ -792,74 +853,64 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     <div className="space-y-6">
       {/* Search and Export Section */}
       <Card className="p-6">
-        <div className="flex flex-col gap-4">
-          {/* 搜索框 */}
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="flex-1 flex gap-2">
-              <div className="flex-1 relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="输入发货单号查询（支持多个，用空格、逗号、换行分隔）..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  className="pl-10"
-                />
-              </div>
-              <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
-                <Search className="h-4 w-4" />
-                {isPending ? "搜索中..." : "搜索"}
-              </Button>
-              {searchQuery && (
-                <Button onClick={handleClearSearch} variant="outline" className="gap-2">
-                  清空
-                </Button>
-              )}
-            </div>
-            <Button onClick={handleExport} className="gap-2">
-              <Download className="h-4 w-4" />
-              导出数据
-            </Button>
-            <div className="relative">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleFileSelect}
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                disabled={importing}
-              />
-              <Button variant="outline" className="gap-2" disabled={importing}>
-                <Upload className="h-4 w-4" />
-                {importing ? '导入中...' : '导入数据'}
-              </Button>
-            </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {/* 发货单号查询 */}
+          <div className="flex-1 min-w-[200px] relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="输入发货单号查询（支持多个，用空格、逗号、换行分隔）..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyPress={handleKeyPress}
+              className="pl-10"
+            />
           </div>
           
-          {/* 日期筛选 */}
-          <div className="flex flex-wrap gap-4">
-            <div className="flex-1 min-w-[150px]">
-              <label className="text-sm text-muted-foreground mb-2 block">开始日期</label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-            <div className="flex-1 min-w-[150px]">
-              <label className="text-sm text-muted-foreground mb-2 block">结束日期</label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-              />
-            </div>
-            <div className="flex items-end">
-              <Button onClick={handleResetFilters} variant="outline" className="gap-2">
-                重置筛选
-              </Button>
-            </div>
+          {/* 日期范围 */}
+          <div className="w-[280px]">
+            <DateRangePicker
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateChange={(from, to) => {
+                setDateFrom(from || "")
+                setDateTo(to || "")
+              }}
+              placeholder="选择日期范围"
+            />
           </div>
+          
+          {/* 搜索按钮 */}
+          <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
+            <Search className="h-4 w-4" />
+            {isPending ? "搜索中..." : "搜索"}
+          </Button>
+          
+          {/* 导出数据 */}
+          <Button onClick={handleExport} className="gap-2">
+            <Download className="h-4 w-4" />
+            导出数据
+          </Button>
+          
+          {/* 导入数据 */}
+          <div className="relative">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleFileSelect}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              disabled={importing}
+            />
+            <Button variant="outline" className="gap-2" disabled={importing}>
+              <Upload className="h-4 w-4" />
+              {importing ? '导入中...' : '导入数据'}
+            </Button>
+          </div>
+          
+          {/* 重置筛选 */}
+          <Button onClick={handleResetFilters} variant="outline" className="gap-2">
+            重置筛选
+          </Button>
         </div>
       </Card>
 
@@ -1322,7 +1373,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         {!loading && !error && logisticsData.length > 0 && (
           <div className="p-4 border-t border-border">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-              <div className="text-sm text-muted-foreground">
+              <div className="text-sm text-muted-foreground whitespace-nowrap">
                 显示第 {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, totalRecords)} 条，共 {totalRecords} 条记录
               </div>
               {totalPages > 1 && (

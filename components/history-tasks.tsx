@@ -22,6 +22,7 @@ import {
   PaginationEllipsis,
 } from "@/components/ui/pagination"
 import { fetchTaskHistoryData, fetchTaskHistoryStatistics, fetchTaskHistoryChargeList } from "@/app/actions/inventory"
+import { DateRangePicker } from "@/components/ui/date-range-picker"
 import type { TaskHistoryRecord } from "@/lib/inventory-data"
 
 // 方案映射
@@ -202,21 +203,16 @@ export default function HistoryTasks() {
               </Select>
             </div>
 
-            <div className="flex-1 min-w-[150px]">
-              <label className="text-sm text-muted-foreground mb-2 block">开始日期</label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-
-            <div className="flex-1 min-w-[150px]">
-              <label className="text-sm text-muted-foreground mb-2 block">结束日期</label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+            <div className="flex-1 min-w-[280px]">
+              <label className="text-sm text-muted-foreground mb-2 block">日期范围</label>
+              <DateRangePicker
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                onDateChange={(from, to) => {
+                  setDateFrom(from || "")
+                  setDateTo(to || "")
+                }}
+                placeholder="选择日期范围"
               />
             </div>
           </div>

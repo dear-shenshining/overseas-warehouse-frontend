@@ -36,8 +36,17 @@ function Calendar({
       )}
       captionLayout={captionLayout}
       formatters={{
-        formatMonthDropdown: (date) =>
-          date.toLocaleString('default', { month: 'short' }),
+        formatMonthDropdown: (date) => {
+          const months = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月']
+          return months[date.getMonth()]
+        },
+        formatYearDropdown: (date) => {
+          return `${date.getFullYear()}年`
+        },
+        formatCaption: (date) => {
+          const months = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月']
+          return `${months[date.getMonth()]} ${date.getFullYear()}`
+        },
         ...formatters,
       }}
       classNames={{

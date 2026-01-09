@@ -180,15 +180,17 @@ export default function LogisticsPage() {
               <div className="flex items-center gap-3 ml-auto">
                 {overseasLastUpdateTime && !overseasUpdating && (
                   <span className="text-sm text-muted-foreground">
-                    最新更新时间：{overseasLastUpdateTime.toLocaleString('zh-CN', { 
-                      year: 'numeric', 
-                      month: '2-digit', 
-                      day: '2-digit', 
-                      hour: '2-digit', 
-                      minute: '2-digit', 
-                      second: '2-digit',
-                      hour12: false 
-                    })}
+                    最新更新时间：{overseasLastUpdateTime instanceof Date && !isNaN(overseasLastUpdateTime.getTime()) 
+                      ? overseasLastUpdateTime.toLocaleString('zh-CN', { 
+                          year: 'numeric', 
+                          month: '2-digit', 
+                          day: '2-digit', 
+                          hour: '2-digit', 
+                          minute: '2-digit', 
+                          second: '2-digit',
+                          hour12: false 
+                        })
+                      : '--'}
                   </span>
                 )}
                 <Button
