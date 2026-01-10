@@ -181,7 +181,7 @@ export default function LogisticsPage() {
               }`}
             >
               <TrendingUp className="h-5 w-5" />
-              <span className="font-medium">日利润报表</span>
+              <span className="font-medium">每日发货毛利</span>
             </button>
           </nav>
 
@@ -222,23 +222,27 @@ export default function LogisticsPage() {
                   : inventorySubMenu === "task"
                   ? "滞销库存管理 - 任务及时限"
                   : "滞销库存管理 - 历史任务"
-                : "日利润报表"}
+                : "每日发货毛利"}
             </h2>
             {activePage === "overseas" && (
               <div className="flex items-center gap-3 ml-auto">
                 {overseasLastUpdateTime && !overseasUpdating && (
                   <span className="text-sm text-muted-foreground">
-                    最新更新时间：{overseasLastUpdateTime instanceof Date && !isNaN(overseasLastUpdateTime.getTime()) 
-                      ? overseasLastUpdateTime.toLocaleString('zh-CN', { 
-                          year: 'numeric', 
-                          month: '2-digit', 
-                          day: '2-digit', 
-                          hour: '2-digit', 
-                          minute: '2-digit', 
+                    最新更新时间：
+                    {(() => {
+                      if (overseasLastUpdateTime instanceof Date && !isNaN(overseasLastUpdateTime.getTime())) {
+                        return overseasLastUpdateTime.toLocaleString('zh-CN', {
+                          year: 'numeric',
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
                           second: '2-digit',
-                          hour12: false 
+                          hour12: false,
                         })
-                      : '--'}
+                      }
+                      return '--'
+                    })()}
                   </span>
                 )}
                 <Button
@@ -307,7 +311,7 @@ export default function LogisticsPage() {
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 overflow-hidden p-6">
+        <main className="flex-1 overflow-y-auto p-4 pb-4">
           {activePage === "overseas" ? (
             <OverseasLogistics 
               ref={overseasLogisticsRef}
