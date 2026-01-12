@@ -30,6 +30,7 @@ export default function LogisticsPage() {
   const [profitSubMenuOpen, setProfitSubMenuOpen] = useState(true) // 控制子菜单展开/收起
   const [isRefreshing, startRefresh] = useTransition()
   const [username, setUsername] = useState<string | null>(null)
+  const [canViewProfitAnalysis, setCanViewProfitAnalysis] = useState<boolean>(false)
   // 负责人列表（写死，从 per_charge 表中获取的所有负责人）
   const chargeList = ['宁一南', '吴安格', '朱梦婷', '老款下架', '姚吕敏', '重新上架', '金张倩']
   const [selectedCharge, setSelectedCharge] = useState<string>("")
@@ -56,9 +57,9 @@ export default function LogisticsPage() {
 
   // 负责人列表已写死，不再需要从数据库获取
 
-  // 获取用户名
+  // 获取用户名和权限
   useEffect(() => {
-    // 从 cookie 中读取用户名
+    // 从 cookie 中读取用户名和权限
     const getCookie = (name: string) => {
       const value = `; ${document.cookie}`
       const parts = value.split(`; ${name}=`)
@@ -66,10 +67,18 @@ export default function LogisticsPage() {
       return null
     }
     const user = getCookie('username')
+    const canView = getCookie('can_view_profit_analysis')
     if (user) {
       setUsername(decodeURIComponent(user))
     }
-  }, [])
+    const hasPermission = canView === 'true'
+    setCanViewProfitAnalysis(hasPermission)
+    
+    // 如果没有权限查看分析页面，且当前在分析页面，自动切换到异常页面
+    if (!hasPermission && activePage === "profit" && profitSubMenu === "analysis") {
+      setProfitSubMenu("anomaly")
+    }
+  }, [activePage, profitSubMenu])
 
   // 处理登出
   const handleLogout = async () => {
@@ -185,6 +194,10 @@ export default function LogisticsPage() {
                     // 如果不是当前页面，切换到每日发货毛利页面并展开子菜单
                     setActivePage("profit")
                     setProfitSubMenuOpen(true)
+                    // 如果没有权限查看分析页面，默认显示异常页面
+                    if (!canViewProfitAnalysis) {
+                      setProfitSubMenu("anomaly")
+                    }
                   }
                 }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
@@ -205,17 +218,19 @@ export default function LogisticsPage() {
               {/* 子菜单 */}
               {activePage === "profit" && profitSubMenuOpen && (
                 <div className="ml-8 mt-1 space-y-1">
-                  <button
-                    onClick={() => setProfitSubMenu("analysis")}
-                    className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-sm ${
-                      profitSubMenu === "analysis"
-                        ? "bg-sidebar-accent/80 text-sidebar-accent-foreground"
-                        : "text-sidebar-foreground/70 hover:bg-sidebar-accent/30"
-                    }`}
-                  >
-                    <BarChart3 className="h-4 w-4" />
-                    <span>每日发货毛利分析</span>
-                  </button>
+                  {canViewProfitAnalysis && (
+                    <button
+                      onClick={() => setProfitSubMenu("analysis")}
+                      className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-sm ${
+                        profitSubMenu === "analysis"
+                          ? "bg-sidebar-accent/80 text-sidebar-accent-foreground"
+                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/30"
+                      }`}
+                    >
+                      <BarChart3 className="h-4 w-4" />
+                      <span>每日发货毛利分析</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => setProfitSubMenu("anomaly")}
                     className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-sm ${
@@ -226,7 +241,7 @@ export default function LogisticsPage() {
                   >
                     <History className="h-4 w-4" />
                     <span>每日发货毛利异常</span>
-            </button>
+                  </button>
                 </div>
               )}
             </div>
@@ -269,7 +284,7 @@ export default function LogisticsPage() {
                   : inventorySubMenu === "task"
                   ? "滞销库存管理 - 任务及时限"
                   : "滞销库存管理 - 历史任务"
-                : profitSubMenu === "analysis"
+                : canViewProfitAnalysis && profitSubMenu === "analysis"
                 ? "每日发货毛利 - 分析"
                 : "每日发货毛利 - 异常"}
             </h2>
@@ -377,7 +392,7 @@ export default function LogisticsPage() {
             ) : (
               <HistoryTasks />
             )
-          ) : profitSubMenu === "analysis" ? (
+          ) : canViewProfitAnalysis && profitSubMenu === "analysis" ? (
             <DailyProfitReport />
           ) : (
             <DailyProfitAnomaly />
