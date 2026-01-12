@@ -332,7 +332,7 @@ export default function DailyProfitAnomaly() {
                       <th className="text-right p-2 font-medium text-sm">总数量</th>
                       <th className="text-right p-2 font-medium text-sm">异常数量</th>
                       <th className="text-right p-2 font-medium text-sm">异常率</th>
-                      <th className="text-right p-2 font-medium text-sm">平均毛利率</th>
+                      <th className="text-right p-2 font-medium text-sm">异常毛利率</th>
                     </tr>
                   </thead>
                   <tbody>
