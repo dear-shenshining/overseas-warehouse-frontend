@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select"
 import OverseasLogistics, { type OverseasLogisticsRef } from "@/components/overseas-logistics"
 import DailyProfitReport from "@/components/daily-profit-report"
+import DailyProfitAnomaly from "@/components/daily-profit-anomaly"
 import SlowMovingInventory from "@/components/slow-moving-inventory"
 import TaskTimeline from "@/components/task-timeline"
 import HistoryTasks from "@/components/history-tasks"
@@ -25,6 +26,8 @@ export default function LogisticsPage() {
   const [activePage, setActivePage] = useState<"overseas" | "inventory" | "profit">("overseas")
   const [inventorySubMenu, setInventorySubMenu] = useState<"overview" | "task" | "history">("overview")
   const [inventorySubMenuOpen, setInventorySubMenuOpen] = useState(true) // 控制子菜单展开/收起
+  const [profitSubMenu, setProfitSubMenu] = useState<"analysis" | "anomaly">("analysis")
+  const [profitSubMenuOpen, setProfitSubMenuOpen] = useState(true) // 控制子菜单展开/收起
   const [isRefreshing, startRefresh] = useTransition()
   const [username, setUsername] = useState<string | null>(null)
   // 负责人列表（写死，从 per_charge 表中获取的所有负责人）
@@ -172,8 +175,18 @@ export default function LogisticsPage() {
               )}
             </div>
 
+            <div>
             <button
-              onClick={() => setActivePage("profit")}
+                onClick={() => {
+                  if (activePage === "profit") {
+                    // 如果已经是当前页面，切换子菜单展开/收起
+                    setProfitSubMenuOpen(!profitSubMenuOpen)
+                  } else {
+                    // 如果不是当前页面，切换到每日发货毛利页面并展开子菜单
+                    setActivePage("profit")
+                    setProfitSubMenuOpen(true)
+                  }
+                }}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                 activePage === "profit"
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -181,8 +194,42 @@ export default function LogisticsPage() {
               }`}
             >
               <TrendingUp className="h-5 w-5" />
-              <span className="font-medium">每日发货毛利</span>
+                <span className="font-medium">每日发货毛利</span>
+                <ChevronRight 
+                  className={`h-4 w-4 ml-auto transition-transform ${
+                    activePage === "profit" && profitSubMenuOpen ? "rotate-90" : ""
+                  }`} 
+                />
+              </button>
+              
+              {/* 子菜单 */}
+              {activePage === "profit" && profitSubMenuOpen && (
+                <div className="ml-8 mt-1 space-y-1">
+                  <button
+                    onClick={() => setProfitSubMenu("analysis")}
+                    className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-sm ${
+                      profitSubMenu === "analysis"
+                        ? "bg-sidebar-accent/80 text-sidebar-accent-foreground"
+                        : "text-sidebar-foreground/70 hover:bg-sidebar-accent/30"
+                    }`}
+                  >
+                    <BarChart3 className="h-4 w-4" />
+                    <span>每日发货毛利分析</span>
+                  </button>
+                  <button
+                    onClick={() => setProfitSubMenu("anomaly")}
+                    className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-sm ${
+                      profitSubMenu === "anomaly"
+                        ? "bg-sidebar-accent/80 text-sidebar-accent-foreground"
+                        : "text-sidebar-foreground/70 hover:bg-sidebar-accent/30"
+                    }`}
+                  >
+                    <History className="h-4 w-4" />
+                    <span>每日发货毛利异常</span>
             </button>
+                </div>
+              )}
+            </div>
           </nav>
 
           {/* 用户信息和登出 */}
@@ -222,7 +269,9 @@ export default function LogisticsPage() {
                   : inventorySubMenu === "task"
                   ? "滞销库存管理 - 任务及时限"
                   : "滞销库存管理 - 历史任务"
-                : "每日发货毛利"}
+                : profitSubMenu === "analysis"
+                ? "每日发货毛利 - 分析"
+                : "每日发货毛利 - 异常"}
             </h2>
             {activePage === "overseas" && (
               <div className="flex items-center gap-3 ml-auto">
@@ -232,11 +281,11 @@ export default function LogisticsPage() {
                     {(() => {
                       if (overseasLastUpdateTime instanceof Date && !isNaN(overseasLastUpdateTime.getTime())) {
                         return overseasLastUpdateTime.toLocaleString('zh-CN', {
-                          year: 'numeric',
-                          month: '2-digit',
-                          day: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
+                          year: 'numeric', 
+                          month: '2-digit', 
+                          day: '2-digit', 
+                          hour: '2-digit', 
+                          minute: '2-digit', 
                           second: '2-digit',
                           hour12: false,
                         })
@@ -328,8 +377,10 @@ export default function LogisticsPage() {
             ) : (
               <HistoryTasks />
             )
-          ) : (
+          ) : profitSubMenu === "analysis" ? (
             <DailyProfitReport />
+          ) : (
+            <DailyProfitAnomaly />
           )}
         </main>
       </div>

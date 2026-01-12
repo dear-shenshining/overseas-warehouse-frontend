@@ -574,7 +574,7 @@ git status
 git add .
 
 # 3. 首次提交
-git commit -m "初始提交：海外仓前端页面项目"
+git commit -m "日毛利数据"
 
 # 4. 创建 main 分支（如果还没有）
 git checkout -b main
@@ -597,10 +597,10 @@ git pull origin main
 #    手动解决冲突，删除冲突标记
 
 # 4. 标记冲突已解决
-git add 冲突的文件
+git add .
 
 # 5. 完成合并提交
-git commit -m "改变创建时间逻辑2.0"
+git commit -m "海外物流管理添加分页优化统计查询"
 
 # 6. 再次推送
 git push origin main

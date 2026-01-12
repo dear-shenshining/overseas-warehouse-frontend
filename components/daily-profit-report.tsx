@@ -545,7 +545,7 @@ export default function DailyProfitReport() {
             onClick={() => handleTabClick('profit')}
           >
             <div className="flex items-center justify-between mb-3">
-              <div>
+            <div>
                 <p className="text-sm text-muted-foreground mb-1">总毛利（金额）</p>
                 <p className="text-2xl font-semibold text-foreground">{formatCurrency(stats.totalProfit)}</p>
               </div>
@@ -572,12 +572,12 @@ export default function DailyProfitReport() {
               </div>
               <div className="p-2.5 bg-chart-2/10 rounded-lg">
                 <Package className="h-5 w-5 text-chart-2" />
-              </div>
             </div>
+          </div>
             <div className="text-sm text-muted-foreground">
               总运费金额
-            </div>
-          </Card>
+          </div>
+        </Card>
 
           {/* 总订单 */}
           <Card 
@@ -587,7 +587,7 @@ export default function DailyProfitReport() {
             onClick={() => handleTabClick('orders')}
           >
             <div className="flex items-center justify-between mb-3">
-              <div>
+            <div>
                 <p className="text-sm text-muted-foreground mb-1">总订单（数量）</p>
                 <p className="text-2xl font-semibold text-foreground">{stats.totalOrders}</p>
               </div>
@@ -614,12 +614,12 @@ export default function DailyProfitReport() {
               </div>
               <div className="p-2.5 bg-chart-3/10 rounded-lg">
                 <TrendingUp className="h-5 w-5 text-chart-3" />
-              </div>
             </div>
+          </div>
             <div className="text-sm text-muted-foreground">
               毛利率低于20%的订单数量
-            </div>
-          </Card>
+          </div>
+        </Card>
 
           {/* 无运费补贴 */}
           <Card 
@@ -629,7 +629,7 @@ export default function DailyProfitReport() {
             onClick={() => handleTabClick('noShippingRefund')}
           >
             <div className="flex items-center justify-between mb-3">
-              <div>
+            <div>
                 <p className="text-sm text-muted-foreground mb-1">无运费补贴（数量）</p>
                 <p className="text-2xl font-semibold text-foreground">{stats.noShippingRefundCount}</p>
               </div>
@@ -660,7 +660,7 @@ export default function DailyProfitReport() {
               <span className="text-sm text-muted-foreground">运费</span>
             </div>
           </div>
-        </div>
+          </div>
         <ResponsiveContainer width="100%" height={320}>
           <ComposedChart 
             data={dailyData}
@@ -735,14 +735,14 @@ export default function DailyProfitReport() {
               <div className="animate-pulse text-muted-foreground">加载中...</div>
             </div>
           ) : filteredOrders.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+            <div className="overflow-auto max-h-[400px]">
+              <table className="w-full border-collapse min-w-[1000px]">
                 <thead>
                   <tr className="border-b">
                     <th className="text-left p-3 font-medium text-sm">单号</th>
                     <th className="text-left p-3 font-medium text-sm">店铺名</th>
                     <th className="text-left p-3 font-medium text-sm">付款时间</th>
-                    <th className="text-left p-3 font-medium text-sm">SKU</th>
+                    <th className="text-left p-3 font-medium text-sm w-[15%]">SKU</th>
                     <th className="text-left p-3 font-medium text-sm">物流渠道</th>
                     <th className="text-right p-3 font-medium text-sm">商品总成本</th>
                     <th className="text-right p-3 font-medium text-sm">运费</th>
@@ -770,7 +770,7 @@ export default function DailyProfitReport() {
                         <td className="p-3 text-sm">{order.order_number}</td>
                         <td className="p-3 text-sm">{order.store_name || '-'}</td>
                         <td className="p-3 text-sm">{paymentDate || '-'}</td>
-                        <td className="p-3 text-sm">{order.platform_sku || '-'}</td>
+                        <td className="p-3 text-sm max-w-[200px] truncate" title={order.platform_sku || '-'}>{order.platform_sku || '-'}</td>
                         <td className="p-3 text-sm">{order.logistics_channel || '-'}</td>
                         <td className="p-3 text-sm text-right">{formatCurrency(order.total_product_cost || 0)}</td>
                         <td className="p-3 text-sm text-right">{formatCurrency(order.actual_shipping_fee || 0)}</td>
@@ -882,7 +882,7 @@ export default function DailyProfitReport() {
               </Pagination>
             </div>
           )}
-        </Card>
+      </Card>
       )}
 
       {/* 订单详情对话框 */}

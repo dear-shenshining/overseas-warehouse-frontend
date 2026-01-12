@@ -664,3 +664,220 @@ export async function recalculateProfit(): Promise<{
   }
 }
 
+/**
+ * 获取异常SKU数据（按SKU分组统计）
+ * @param dateFrom 开始日期（可选，格式：YYYY-MM-DD）
+ * @param dateTo 结束日期（可选，格式：YYYY-MM-DD）
+ * @param storeName 店铺名称（可选）
+ * @returns 异常SKU数据
+ */
+export async function getAnomalySKUs(
+  dateFrom?: string,
+  dateTo?: string,
+  storeName?: string
+): Promise<{
+  totalCount: number // 筛选范围内的总订单数量
+  lowProfitRateCount: number // 毛利率低的订单数量
+  noShippingRefundCount: number // 无运费补贴的订单数量
+  anomalyCount: number // 异常订单总数（毛利率低 + 无运费补贴，去重）
+  anomalyRate: number // 异常率（异常订单数 / 总订单数 * 100）
+  lowProfitRateSKUs: Array<{
+    platform_sku: string
+    totalCount: number // 该SKU在筛选范围内的总订单数
+    anomalyCount: number // 该SKU毛利率低的订单数
+    anomalyRate: number // 该SKU的异常率
+    avg_profit_rate: number // 平均毛利率
+  }>
+  noShippingRefundSKUs: Array<{
+    platform_sku: string
+    totalCount: number // 该SKU在筛选范围内的总订单数
+    anomalyCount: number // 该SKU无运费补贴的订单数
+    anomalyRate: number // 该SKU的异常率
+  }>
+}> {
+  try {
+    const { query } = await import('@/lib/db')
+    
+    // 构建基础WHERE条件
+    let whereConditions = ['payment_time IS NOT NULL', 'platform_sku IS NOT NULL', "platform_sku != ''"]
+    const params: any[] = []
+    let paramIndex = 1
+
+    if (dateFrom) {
+      whereConditions.push(`payment_time::date >= $${paramIndex}::date`)
+      params.push(dateFrom)
+      paramIndex++
+    }
+
+    if (dateTo) {
+      whereConditions.push(`payment_time::date <= $${paramIndex}::date`)
+      params.push(dateTo)
+      paramIndex++
+    }
+
+    if (storeName && storeName !== 'all') {
+      whereConditions.push(`store_name = $${paramIndex}`)
+      params.push(storeName)
+      paramIndex++
+    }
+
+    const whereClause = whereConditions.join(' AND ')
+
+    // 查询总订单数量
+    const totalCountSql = `
+      SELECT COUNT(*) as count
+      FROM orders
+      WHERE ${whereClause}
+    `
+
+    // 查询毛利率低的订单数量
+    const lowProfitRateCountSql = `
+      SELECT COUNT(*) as count
+      FROM orders
+      WHERE ${whereClause}
+        AND profit_rate IS NOT NULL 
+        AND profit_rate < 20
+    `
+
+    // 查询无运费补贴的订单数量
+    const noShippingRefundCountSql = `
+      SELECT COUNT(*) as count
+      FROM orders
+      WHERE ${whereClause}
+        AND (shipping_refund IS NULL OR shipping_refund = 0)
+    `
+
+    // 查询异常订单总数（毛利率低或无运费补贴，去重）
+    const anomalyCountSql = `
+      SELECT COUNT(DISTINCT id) as count
+      FROM orders
+      WHERE ${whereClause}
+        AND (
+          (profit_rate IS NOT NULL AND profit_rate < 20)
+          OR (shipping_refund IS NULL OR shipping_refund = 0)
+        )
+    `
+
+    // 查询毛利率低数量最多的SKU（前10个）
+    // 毛利率低于20%的订单，按SKU分组统计
+    // 使用子查询获取每个SKU的总订单数和异常订单数
+    const lowProfitRateSql = `
+      WITH anomaly_skus AS (
+        SELECT 
+          platform_sku,
+          COUNT(*) as anomaly_count,
+          ROUND(AVG(profit_rate)::numeric, 2) as avg_profit_rate
+        FROM orders
+        WHERE ${whereClause}
+          AND profit_rate IS NOT NULL 
+          AND profit_rate < 20
+        GROUP BY platform_sku
+        ORDER BY anomaly_count DESC
+        LIMIT 10
+      )
+      SELECT 
+        a.platform_sku,
+        a.anomaly_count,
+        a.avg_profit_rate,
+        COALESCE(t.total_count, 0) as total_count
+      FROM anomaly_skus a
+      LEFT JOIN (
+        SELECT 
+          platform_sku,
+          COUNT(*) as total_count
+        FROM orders
+        WHERE ${whereClause}
+        GROUP BY platform_sku
+      ) t ON a.platform_sku = t.platform_sku
+      ORDER BY a.anomaly_count DESC
+    `
+
+    // 查询无运费补贴数量最多的SKU（前10个）
+    // 运费回款为0或null的订单，按SKU分组统计
+    // 使用子查询获取每个SKU的总订单数和异常订单数
+    const noShippingRefundSql = `
+      WITH anomaly_skus AS (
+        SELECT 
+          platform_sku,
+          COUNT(*) as anomaly_count
+        FROM orders
+        WHERE ${whereClause}
+          AND (shipping_refund IS NULL OR shipping_refund = 0)
+        GROUP BY platform_sku
+        ORDER BY anomaly_count DESC
+        LIMIT 10
+      )
+      SELECT 
+        a.platform_sku,
+        a.anomaly_count,
+        COALESCE(t.total_count, 0) as total_count
+      FROM anomaly_skus a
+      LEFT JOIN (
+        SELECT 
+          platform_sku,
+          COUNT(*) as total_count
+        FROM orders
+        WHERE ${whereClause}
+        GROUP BY platform_sku
+      ) t ON a.platform_sku = t.platform_sku
+      ORDER BY a.anomaly_count DESC
+    `
+
+    const [
+      totalCountResult,
+      lowProfitRateCountResult,
+      noShippingRefundCountResult,
+      anomalyCountResult,
+      lowProfitRateResults,
+      noShippingRefundResults,
+    ] = await Promise.all([
+      query<{ count: string }>(totalCountSql, params),
+      query<{ count: string }>(lowProfitRateCountSql, params),
+      query<{ count: string }>(noShippingRefundCountSql, params),
+      query<{ count: string }>(anomalyCountSql, params),
+      query<{ platform_sku: string; anomaly_count: string; avg_profit_rate: string; total_count: string }>(lowProfitRateSql, params),
+      query<{ platform_sku: string; anomaly_count: string; total_count: string }>(noShippingRefundSql, params),
+    ])
+
+    const totalCount = parseInt(totalCountResult[0]?.count || '0', 10)
+    const lowProfitRateCount = parseInt(lowProfitRateCountResult[0]?.count || '0', 10)
+    const noShippingRefundCount = parseInt(noShippingRefundCountResult[0]?.count || '0', 10)
+    const anomalyCount = parseInt(anomalyCountResult[0]?.count || '0', 10)
+    const anomalyRate = totalCount > 0 ? (anomalyCount / totalCount) * 100 : 0
+
+    return {
+      totalCount,
+      lowProfitRateCount,
+      noShippingRefundCount,
+      anomalyCount,
+      anomalyRate: Math.round(anomalyRate * 100) / 100, // 保留2位小数
+      lowProfitRateSKUs: lowProfitRateResults.map(r => {
+        const totalCount = parseInt(r.total_count, 10)
+        const anomalyCount = parseInt(r.anomaly_count, 10)
+        const anomalyRate = totalCount > 0 ? (anomalyCount / totalCount) * 100 : 0
+        return {
+          platform_sku: r.platform_sku,
+          totalCount,
+          anomalyCount,
+          anomalyRate: Math.round(anomalyRate * 100) / 100, // 保留2位小数
+          avg_profit_rate: parseFloat(r.avg_profit_rate),
+        }
+      }),
+      noShippingRefundSKUs: noShippingRefundResults.map(r => {
+        const totalCount = parseInt(r.total_count, 10)
+        const anomalyCount = parseInt(r.anomaly_count, 10)
+        const anomalyRate = totalCount > 0 ? (anomalyCount / totalCount) * 100 : 0
+        return {
+          platform_sku: r.platform_sku,
+          totalCount,
+          anomalyCount,
+          anomalyRate: Math.round(anomalyRate * 100) / 100, // 保留2位小数
+        }
+      }),
+    }
+  } catch (error) {
+    console.error('获取异常SKU数据失败:', error)
+    throw error
+  }
+}
+

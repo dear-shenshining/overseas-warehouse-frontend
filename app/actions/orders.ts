@@ -460,3 +460,40 @@ export async function recalculateProfit() {
   }
 }
 
+/**
+ * 获取异常SKU数据（按SKU分组统计）
+ * @param dateFrom 开始日期
+ * @param dateTo 结束日期
+ * @param storeName 店铺名称（可选）
+ * @returns 异常SKU数据
+ */
+export async function fetchAnomalySKUs(
+  dateFrom?: string,
+  dateTo?: string,
+  storeName?: string
+) {
+  try {
+    const { getAnomalySKUs } = await import('@/lib/orders-data')
+    const result = await getAnomalySKUs(dateFrom, dateTo, storeName)
+    return {
+      success: true,
+      data: result,
+    }
+  } catch (error: any) {
+    console.error('获取异常SKU数据失败:', error)
+    return {
+      success: false,
+      error: error.message || '获取异常SKU数据失败',
+      data: {
+        totalCount: 0,
+        lowProfitRateCount: 0,
+        noShippingRefundCount: 0,
+        anomalyCount: 0,
+        anomalyRate: 0,
+        lowProfitRateSKUs: [],
+        noShippingRefundSKUs: [],
+      },
+    }
+  }
+}
+
