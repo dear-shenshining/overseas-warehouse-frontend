@@ -11,7 +11,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { fetchAnomalySKUs, fetchStoreList, fetchOperatorList } from "@/app/actions/orders"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { fetchAnomalySKUs, fetchStoreList, fetchOperatorList, fetchAnomalyOrderDetails } from "@/app/actions/orders"
 import { format, subDays } from "date-fns"
 import { zhCN } from "date-fns/locale"
 
@@ -21,6 +28,22 @@ interface AnomalySKU {
   anomalyCount: number
   anomalyRate: number
   avg_profit_rate?: number
+}
+
+interface AnomalyOrderDetail {
+  order_number: string
+  store_name?: string
+  operator?: string
+  payment_time?: Date | string
+  platform_sku?: string
+  logistics_channel?: string
+  total_product_cost?: number
+  actual_shipping_fee?: number
+  sales_refund?: number
+  shipping_refund?: number
+  profit?: number
+  profit_rate?: number
+  total_amount?: number
 }
 
 export default function DailyProfitAnomaly() {
@@ -46,6 +69,11 @@ export default function DailyProfitAnomaly() {
   })
   const [lowProfitRateSKUs, setLowProfitRateSKUs] = useState<AnomalySKU[]>([])
   const [noShippingRefundSKUs, setNoShippingRefundSKUs] = useState<AnomalySKU[]>([])
+  const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [selectedSKU, setSelectedSKU] = useState<string>("")
+  const [selectedAnomalyType, setSelectedAnomalyType] = useState<'lowProfitRate' | 'noShippingRefund'>('lowProfitRate')
+  const [orderDetails, setOrderDetails] = useState<AnomalyOrderDetail[]>([])
+  const [loadingDetails, setLoadingDetails] = useState(false)
 
   // 加载店铺列表和运营人员列表
   useEffect(() => {
@@ -101,6 +129,54 @@ export default function DailyProfitAnomaly() {
       setDateFrom(from)
       setDateTo(to)
     }
+  }
+
+  // 处理SKU点击事件
+  const handleSKUClick = async (sku: string, anomalyType: 'lowProfitRate' | 'noShippingRefund') => {
+    setSelectedSKU(sku)
+    setSelectedAnomalyType(anomalyType)
+    setIsDialogOpen(true)
+    setLoadingDetails(true)
+    setOrderDetails([])
+
+    try {
+      const result = await fetchAnomalyOrderDetails(
+        sku,
+        anomalyType,
+        dateFrom,
+        dateTo,
+        selectedStore === "all" ? undefined : selectedStore,
+        selectedOperator === "all" ? undefined : selectedOperator
+      )
+
+      if (result.success && result.data) {
+        setOrderDetails(result.data)
+      }
+    } catch (error) {
+      console.error('加载订单详情失败:', error)
+    } finally {
+      setLoadingDetails(false)
+    }
+  }
+
+  // 格式化金额
+  const formatCurrency = (amount: number | null | undefined) => {
+    if (amount === null || amount === undefined) return '-'
+    return `¥${Number(amount).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
+
+  // 格式化日期
+  const formatDate = (date: Date | string | null | undefined) => {
+    if (!date) return '-'
+    if (typeof date === 'string') {
+      const dateMatch = date.match(/^(\d{4}-\d{2}-\d{2})/)
+      if (dateMatch) {
+        return dateMatch[1]
+      }
+      return date.split('T')[0].split(' ')[0]
+    }
+    const dateObj = new Date(date)
+    return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`
   }
 
   return (
@@ -263,7 +339,13 @@ export default function DailyProfitAnomaly() {
                     {lowProfitRateSKUs.map((sku, index) => (
                       <tr key={sku.platform_sku} className="border-b hover:bg-muted/50">
                         <td className="p-2 text-sm">{index + 1}</td>
-                        <td className="p-2 text-sm font-medium">{sku.platform_sku}</td>
+                        <td 
+                          className="p-2 text-sm font-medium cursor-pointer text-primary hover:underline"
+                          onClick={() => handleSKUClick(sku.platform_sku, 'lowProfitRate')}
+                          title="点击查看详情"
+                        >
+                          {sku.platform_sku}
+                        </td>
                         <td className="p-2 text-right text-sm">{sku.totalCount.toLocaleString()}</td>
                         <td className="p-2 text-right text-sm text-orange-500">{sku.anomalyCount.toLocaleString()}</td>
                         <td className="p-2 text-right text-sm text-orange-500 font-medium">
@@ -306,7 +388,13 @@ export default function DailyProfitAnomaly() {
                     {noShippingRefundSKUs.map((sku, index) => (
                       <tr key={sku.platform_sku} className="border-b hover:bg-muted/50">
                         <td className="p-2 text-sm">{index + 1}</td>
-                        <td className="p-2 text-sm font-medium">{sku.platform_sku}</td>
+                        <td 
+                          className="p-2 text-sm font-medium cursor-pointer text-primary hover:underline"
+                          onClick={() => handleSKUClick(sku.platform_sku, 'noShippingRefund')}
+                          title="点击查看详情"
+                        >
+                          {sku.platform_sku}
+                        </td>
                         <td className="p-2 text-right text-sm">{sku.totalCount.toLocaleString()}</td>
                         <td className="p-2 text-right text-sm text-red-500">{sku.anomalyCount.toLocaleString()}</td>
                         <td className="p-2 text-right text-sm text-red-500 font-medium">
@@ -326,6 +414,83 @@ export default function DailyProfitAnomaly() {
           </div>
         </>
       )}
+
+      {/* 订单详情对话框 */}
+      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <DialogContent 
+          className="!max-w-[90vw] !w-[90vw] sm:!max-w-[90vw] max-h-[85vh] overflow-y-auto" 
+          style={{ maxWidth: '95vw', width: '95vw' }}
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {selectedAnomalyType === 'lowProfitRate' ? '毛利率低' : '无运费补贴'}订单详情 - {selectedSKU}
+            </DialogTitle>
+            <DialogDescription>
+              查看该SKU的异常订单明细（共 {orderDetails.length} 条）
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-4">
+            {loadingDetails ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="text-muted-foreground">加载中...</div>
+              </div>
+            ) : orderDetails.length > 0 ? (
+              <div>
+                <table className="w-full border-collapse table-fixed">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-2 font-medium text-xs w-[10%]">单号</th>
+                      <th className="text-left p-2 font-medium text-xs w-[10%]">SKU</th>
+                      <th className="text-left p-2 font-medium text-xs w-[8%]">店铺名</th>
+                      <th className="text-left p-2 font-medium text-xs w-[8%]">付款时间</th>
+                      <th className="text-right p-2 font-medium text-xs w-[8%]">商品总成本</th>
+                      <th className="text-right p-2 font-medium text-xs w-[8%]">实际运费</th>
+                      <th className="text-right p-2 font-medium text-xs w-[8%]">销售回款</th>
+                      <th className="text-right p-2 font-medium text-xs w-[8%]">运费回款</th>
+                      <th className="text-right p-2 font-medium text-xs w-[8%]">毛利</th>
+                      <th className="text-right p-2 font-medium text-xs w-[7%]">利润率</th>
+                      <th className="text-left p-2 font-medium text-xs w-[12%]">店铺运营人员</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderDetails.map((order) => (
+                      <tr key={order.order_number} className="border-b hover:bg-muted/50">
+                        <td className="p-2 text-xs break-all" title={order.order_number || '-'}>
+                          {order.order_number || '-'}
+                        </td>
+                        <td className="p-2 text-xs truncate" title={order.platform_sku || '-'}>
+                          {order.platform_sku || '-'}
+                        </td>
+                        <td className="p-2 text-xs truncate" title={order.store_name || '-'}>
+                          {order.store_name || '-'}
+                        </td>
+                        <td className="p-2 text-xs">{formatDate(order.payment_time)}</td>
+                        <td className="p-2 text-xs text-right">{formatCurrency(order.total_product_cost)}</td>
+                        <td className="p-2 text-xs text-right">{formatCurrency(order.actual_shipping_fee)}</td>
+                        <td className="p-2 text-xs text-right">{formatCurrency(order.sales_refund)}</td>
+                        <td className="p-2 text-xs text-right">{formatCurrency(order.shipping_refund)}</td>
+                        <td className="p-2 text-xs text-right">{formatCurrency(order.profit)}</td>
+                        <td className="p-2 text-xs text-right">
+                          {order.profit_rate !== null && order.profit_rate !== undefined 
+                            ? `${Number(order.profit_rate).toFixed(2)}%` 
+                            : '-'}
+                        </td>
+                        <td className="p-2 text-xs truncate" title={order.operator || '-'}>
+                          {order.operator || '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center py-8">
+                <p className="text-muted-foreground">暂无订单数据</p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

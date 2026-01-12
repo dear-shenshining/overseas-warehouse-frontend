@@ -556,3 +556,38 @@ export async function updateOperatorsForExistingOrders() {
   }
 }
 
+/**
+ * 获取特定SKU的异常订单详情
+ */
+export async function fetchAnomalyOrderDetails(
+  platformSku: string,
+  anomalyType: 'lowProfitRate' | 'noShippingRefund',
+  dateFrom?: string,
+  dateTo?: string,
+  storeName?: string,
+  operator?: string
+) {
+  try {
+    const { getAnomalyOrderDetails } = await import('@/lib/orders-data')
+    const orders = await getAnomalyOrderDetails(
+      platformSku,
+      anomalyType,
+      dateFrom,
+      dateTo,
+      storeName,
+      operator
+    )
+    return {
+      success: true,
+      data: orders,
+    }
+  } catch (error: any) {
+    console.error('获取异常订单详情失败:', error)
+    return {
+      success: false,
+      error: error.message || '获取异常订单详情失败',
+      data: [],
+    }
+  }
+}
+

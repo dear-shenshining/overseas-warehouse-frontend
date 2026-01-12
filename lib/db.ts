@@ -13,9 +13,11 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || '', // 生产环境必须设置，不允许默认值
   database: process.env.DB_NAME || 'seas_ware',
   ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-  max: 10, // 最大连接数
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  max: parseInt(process.env.DB_MAX_CONNECTIONS || '20', 10), // 最大连接数，默认20
+  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10), // 空闲连接超时，默认30秒
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT || '10000', 10), // 连接超时，默认10秒（从2秒增加到10秒）
+  statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT || '30000', 10), // 语句执行超时，默认30秒
+  query_timeout: parseInt(process.env.DB_QUERY_TIMEOUT || '30000', 10), // 查询超时，默认30秒
   // 设置时区为中国时间（GMT+8）
   // 如果不设置，默认使用 UTC 时间
   // 可以通过环境变量 DB_TIMEZONE 自定义时区，默认为 'Asia/Shanghai'
@@ -28,6 +30,18 @@ const pool = new Pool(dbConfig)
 // 处理连接错误
 pool.on('error', (err) => {
   console.error('PostgreSQL 连接池错误:', err)
+  console.error('错误详情:', {
+    message: err.message,
+    code: err.code,
+    stack: err.stack,
+  })
+})
+
+// 处理连接超时
+pool.on('connect', (client) => {
+  client.on('error', (err) => {
+    console.error('数据库客户端错误:', err)
+  })
 })
 
 // 在连接建立后设置时区为中国时间（GMT+8）
@@ -52,15 +66,36 @@ export async function query<T = any>(
   sql: string,
   params?: any[]
 ): Promise<T[]> {
-  try {
-    // 将 MySQL 风格的 ? 占位符转换为 PostgreSQL 的 $1, $2, $3...
-    const convertedSql = convertPlaceholders(sql)
-    const result = await pool.query(convertedSql, params || [])
-    return result.rows as T[]
-  } catch (error) {
-    console.error('数据库查询错误:', error)
-    throw error
+  let retries = 3
+  let lastError: any = null
+  
+  while (retries > 0) {
+    try {
+      // 将 MySQL 风格的 ? 占位符转换为 PostgreSQL 的 $1, $2, $3...
+      const convertedSql = convertPlaceholders(sql)
+      const result = await pool.query(convertedSql, params || [])
+      return result.rows as T[]
+    } catch (error: any) {
+      lastError = error
+      console.error('数据库查询错误:', error)
+      
+      // 如果是连接超时错误，尝试重试
+      if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+        retries--
+        if (retries > 0) {
+          console.log(`连接超时，${retries} 次重试机会...`)
+          await new Promise(resolve => setTimeout(resolve, 1000)) // 等待1秒后重试
+          continue
+        }
+      }
+      
+      // 其他错误直接抛出
+      throw error
+    }
   }
+  
+  // 所有重试都失败
+  throw lastError
 }
 
 /**
@@ -93,7 +128,33 @@ export async function execute(
  * 获取数据库连接（用于事务）
  */
 export async function getConnection(): Promise<PoolClient> {
-  return await pool.connect()
+  let retries = 3
+  let lastError: any = null
+  
+  while (retries > 0) {
+    try {
+      return await pool.connect()
+    } catch (error: any) {
+      lastError = error
+      console.error('获取数据库连接失败:', error)
+      
+      // 如果是连接超时错误，尝试重试
+      if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) {
+        retries--
+        if (retries > 0) {
+          console.log(`连接超时，${retries} 次重试机会...`)
+          await new Promise(resolve => setTimeout(resolve, 1000)) // 等待1秒后重试
+          continue
+        }
+      }
+      
+      // 其他错误直接抛出
+      throw error
+    }
+  }
+  
+  // 所有重试都失败
+  throw lastError
 }
 
 /**

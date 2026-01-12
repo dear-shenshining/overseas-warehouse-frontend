@@ -1061,3 +1061,108 @@ export async function getAnomalySKUs(
   }
 }
 
+/**
+ * 获取特定SKU的异常订单详情
+ * @param platformSku SKU
+ * @param anomalyType 异常类型：'lowProfitRate' | 'noShippingRefund'
+ * @param dateFrom 开始日期
+ * @param dateTo 结束日期
+ * @param storeName 店铺名（可选）
+ * @param operator 运营人员（可选）
+ * @returns 异常订单详情数组
+ */
+export async function getAnomalyOrderDetails(
+  platformSku: string,
+  anomalyType: 'lowProfitRate' | 'noShippingRefund',
+  dateFrom?: string,
+  dateTo?: string,
+  storeName?: string,
+  operator?: string
+): Promise<OrderRecord[]> {
+  try {
+    // 构建基础WHERE条件
+    let whereConditions = [
+      'payment_time IS NOT NULL',
+      'platform_sku = $1'
+    ]
+    const params: any[] = [platformSku]
+    let paramIndex = 2
+
+    if (dateFrom) {
+      whereConditions.push(`payment_time::date >= $${paramIndex}::date`)
+      params.push(dateFrom)
+      paramIndex++
+    }
+
+    if (dateTo) {
+      whereConditions.push(`payment_time::date <= $${paramIndex}::date`)
+      params.push(dateTo)
+      paramIndex++
+    }
+
+    if (storeName && storeName !== 'all') {
+      whereConditions.push(`store_name = $${paramIndex}`)
+      params.push(storeName)
+      paramIndex++
+    }
+
+    // 运营筛选
+    if (operator && operator !== 'all') {
+      const hasOperatorField = await checkOperatorFieldExists()
+      if (hasOperatorField) {
+        whereConditions.push(`operator = $${paramIndex}`)
+        params.push(operator)
+        paramIndex++
+      } else {
+        const { getStoresByOperator } = await import('@/lib/operator-mapping')
+        const stores = getStoresByOperator(operator)
+        if (stores.length > 0) {
+          const storePlaceholders = stores.map((_, i) => `$${paramIndex + i}`).join(',')
+          whereConditions.push(`store_name IN (${storePlaceholders})`)
+          params.push(...stores)
+          paramIndex += stores.length
+        } else {
+          whereConditions.push(`1=0`)
+        }
+      }
+    }
+
+    // 根据异常类型添加筛选条件
+    if (anomalyType === 'lowProfitRate') {
+      whereConditions.push(`profit_rate IS NOT NULL AND profit_rate < 20`)
+    } else if (anomalyType === 'noShippingRefund') {
+      whereConditions.push(`(shipping_refund IS NULL OR shipping_refund = 0)`)
+    }
+
+    const whereClause = whereConditions.join(' AND ')
+
+    // 查询订单详情，包含所有需要的字段（包括物流渠道，用于运费特殊处理）
+    const sql = `
+      SELECT 
+        order_number,
+        store_name,
+        operator,
+        payment_time,
+        platform_sku,
+        logistics_channel,
+        total_product_cost,
+        actual_shipping_fee,
+        sales_refund,
+        shipping_refund,
+        profit,
+        profit_rate,
+        total_amount
+      FROM orders
+      WHERE ${whereClause}
+      ORDER BY payment_time DESC
+    `
+
+    const results = await query<OrderRecord>(sql, params)
+    
+    return results
+  } catch (error) {
+    console.error('获取异常订单详情失败:', error)
+    throw error
+  }
+}
+
