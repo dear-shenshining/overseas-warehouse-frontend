@@ -333,11 +333,12 @@ export async function importOrdersFile(
 export async function fetchOrdersStatistics(
   dateFrom?: string,
   dateTo?: string,
-  storeName?: string
+  storeName?: string,
+  operator?: string
 ) {
   try {
     const { getOrdersStatistics } = await import('@/lib/orders-data')
-    const stats = await getOrdersStatistics(dateFrom, dateTo, storeName)
+    const stats = await getOrdersStatistics(dateFrom, dateTo, storeName, operator)
     return {
       success: true,
       data: {
@@ -388,18 +389,40 @@ export async function fetchStoreList() {
 }
 
 /**
+ * 获取运营人员列表
+ */
+export async function fetchOperatorList() {
+  try {
+    const { getAllOperators } = await import('@/lib/operator-mapping')
+    const operators = getAllOperators()
+    return {
+      success: true,
+      data: operators,
+    }
+  } catch (error: any) {
+    console.error('获取运营人员列表失败:', error)
+    return {
+      success: false,
+      error: error.message || '获取运营人员列表失败',
+      data: [],
+    }
+  }
+}
+
+/**
  * 获取订单列表（带筛选条件）
  */
 export async function fetchOrdersList(
   dateFrom?: string,
   dateTo?: string,
   storeName?: string,
+  operator?: string,
   filterType?: 'lowProfitRate' | 'noShippingRefund'
 ) {
   try {
     const { getOrdersData } = await import('@/lib/orders-data')
     // 直接在数据库层面过滤，提高性能
-    const orders = await getOrdersData(dateFrom, dateTo, storeName, filterType)
+    const orders = await getOrdersData(dateFrom, dateTo, storeName, operator, filterType)
     
     // 转换数据格式，确保类型正确
     const formattedOrders = orders.map(order => ({
@@ -465,16 +488,18 @@ export async function recalculateProfit() {
  * @param dateFrom 开始日期
  * @param dateTo 结束日期
  * @param storeName 店铺名称（可选）
+ * @param operator 运营人员（可选）
  * @returns 异常SKU数据
  */
 export async function fetchAnomalySKUs(
   dateFrom?: string,
   dateTo?: string,
-  storeName?: string
+  storeName?: string,
+  operator?: string
 ) {
   try {
     const { getAnomalySKUs } = await import('@/lib/orders-data')
-    const result = await getAnomalySKUs(dateFrom, dateTo, storeName)
+    const result = await getAnomalySKUs(dateFrom, dateTo, storeName, operator)
     return {
       success: true,
       data: result,
@@ -493,6 +518,38 @@ export async function fetchAnomalySKUs(
         lowProfitRateSKUs: [],
         noShippingRefundSKUs: [],
       },
+    }
+  }
+}
+
+/**
+ * 批量更新现有订单的operator字段
+ * 根据店铺名称匹配运营人员
+ */
+export async function updateOperatorsForExistingOrders() {
+  try {
+    const { updateOperatorsForExistingOrders: updateOperators } = await import('@/lib/orders-data')
+    const result = await updateOperators()
+    
+    if (result.success) {
+      // 重新验证路径，刷新数据
+      revalidatePath('/')
+    }
+    
+    return {
+      success: result.success,
+      updated: result.updated,
+      error: result.error,
+      message: result.success 
+        ? `成功更新 ${result.updated} 条订单的operator字段`
+        : result.error || '批量更新失败',
+    }
+  } catch (error: any) {
+    console.error('批量更新operator字段失败:', error)
+    return {
+      success: false,
+      updated: 0,
+      error: error.message || '批量更新operator字段失败',
     }
   }
 }

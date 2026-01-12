@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { fetchAnomalySKUs, fetchStoreList } from "@/app/actions/orders"
+import { fetchAnomalySKUs, fetchStoreList, fetchOperatorList } from "@/app/actions/orders"
 import { format, subDays } from "date-fns"
 import { zhCN } from "date-fns/locale"
 
@@ -33,7 +33,9 @@ export default function DailyProfitAnomaly() {
     return format(new Date(), "yyyy-MM-dd")
   })
   const [selectedStore, setSelectedStore] = useState<string>("all")
+  const [selectedOperator, setSelectedOperator] = useState<string>("all")
   const [storeList, setStoreList] = useState<string[]>([])
+  const [operatorList, setOperatorList] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [stats, setStats] = useState({
     totalCount: 0,
@@ -45,15 +47,19 @@ export default function DailyProfitAnomaly() {
   const [lowProfitRateSKUs, setLowProfitRateSKUs] = useState<AnomalySKU[]>([])
   const [noShippingRefundSKUs, setNoShippingRefundSKUs] = useState<AnomalySKU[]>([])
 
-  // 加载店铺列表
+  // 加载店铺列表和运营人员列表
   useEffect(() => {
-    const loadStoreList = async () => {
-      const result = await fetchStoreList()
-      if (result.success) {
-        setStoreList(result.data)
+    const loadLists = async () => {
+      const storeResult = await fetchStoreList()
+      if (storeResult.success) {
+        setStoreList(storeResult.data)
+      }
+      const operatorResult = await fetchOperatorList()
+      if (operatorResult.success) {
+        setOperatorList(operatorResult.data)
       }
     }
-    loadStoreList()
+    loadLists()
   }, [])
 
   // 加载异常SKU数据
@@ -64,7 +70,8 @@ export default function DailyProfitAnomaly() {
         const result = await fetchAnomalySKUs(
           dateFrom,
           dateTo,
-          selectedStore === "all" ? undefined : selectedStore
+          selectedStore === "all" ? undefined : selectedStore,
+          selectedOperator === "all" ? undefined : selectedOperator
         )
         
         if (result.success && result.data) {
@@ -86,7 +93,7 @@ export default function DailyProfitAnomaly() {
     }
     
     loadAnomalyData()
-  }, [dateFrom, dateTo, selectedStore])
+  }, [dateFrom, dateTo, selectedStore, selectedOperator])
 
   // 处理日期范围变化
   const handleDateChange = (from: string | undefined, to: string | undefined) => {
@@ -114,6 +121,19 @@ export default function DailyProfitAnomaly() {
               {storeList.map((store) => (
                 <SelectItem key={store} value={store}>
                   {store}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedOperator} onValueChange={setSelectedOperator}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="选择运营" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部运营</SelectItem>
+              {operatorList.map((operator) => (
+                <SelectItem key={operator} value={operator}>
+                  {operator}
                 </SelectItem>
               ))}
             </SelectContent>

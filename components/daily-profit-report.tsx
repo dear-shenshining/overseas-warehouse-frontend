@@ -5,7 +5,7 @@ import { TrendingUp, TrendingDown, DollarSign, Package, Upload, RefreshCw, Shopp
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
-import { importOrdersFile, fetchOrdersStatistics, fetchStoreList, recalculateProfit, fetchOrdersList } from "@/app/actions/orders"
+import { importOrdersFile, fetchOrdersStatistics, fetchStoreList, fetchOperatorList, recalculateProfit, fetchOrdersList, updateOperatorsForExistingOrders } from "@/app/actions/orders"
 import {
   Select,
   SelectContent,
@@ -68,6 +68,7 @@ export default function DailyProfitReport() {
     return format(new Date(), "yyyy-MM-dd")
   })
   const [selectedStore, setSelectedStore] = useState<string>("all")
+  const [selectedOperator, setSelectedOperator] = useState<string>("all")
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [orderDetails, setOrderDetails] = useState<OrderDetail[]>([])
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -78,6 +79,7 @@ export default function DailyProfitReport() {
   const pageSize = 50
   const [importing, setImporting] = useState(false)
   const [recalculating, setRecalculating] = useState(false)
+  const [updatingOperators, setUpdatingOperators] = useState(false)
   const [loading, setLoading] = useState(true)
   const [importResult, setImportResult] = useState<{
     success: boolean
@@ -86,8 +88,9 @@ export default function DailyProfitReport() {
   } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   
-  // 店铺列表和统计数据
+  // 店铺列表、运营人员列表和统计数据
   const [storeList, setStoreList] = useState<string[]>([])
+  const [operatorList, setOperatorList] = useState<string[]>([])
   const [dailyData, setDailyData] = useState<DailyData[]>([])
   const [stats, setStats] = useState({
     totalProfit: 0,
@@ -99,15 +102,19 @@ export default function DailyProfitReport() {
     shippingPercentage: "0.0",
   })
 
-  // 加载店铺列表
+  // 加载店铺列表和运营人员列表
   useEffect(() => {
-    const loadStoreList = async () => {
-      const result = await fetchStoreList()
-      if (result.success) {
-        setStoreList(result.data)
+    const loadLists = async () => {
+      const storeResult = await fetchStoreList()
+      if (storeResult.success) {
+        setStoreList(storeResult.data)
+      }
+      const operatorResult = await fetchOperatorList()
+      if (operatorResult.success) {
+        setOperatorList(operatorResult.data)
       }
     }
-    loadStoreList()
+    loadLists()
   }, [])
 
   // 加载统计数据
@@ -115,11 +122,12 @@ export default function DailyProfitReport() {
     const loadData = async () => {
       setLoading(true)
       try {
-        console.log('加载数据，参数:', { dateFrom, dateTo, selectedStore })
+        console.log('加载数据，参数:', { dateFrom, dateTo, selectedStore, selectedOperator })
         const result = await fetchOrdersStatistics(
           dateFrom,
           dateTo,
-          selectedStore === "all" ? undefined : selectedStore
+          selectedStore === "all" ? undefined : selectedStore,
+          selectedOperator === "all" ? undefined : selectedOperator
         )
         
         console.log('获取到的数据结果:', result)
@@ -163,7 +171,7 @@ export default function DailyProfitReport() {
       }
     }
     loadData()
-  }, [dateFrom, dateTo, selectedStore])
+  }, [dateFrom, dateTo, selectedStore, selectedOperator])
 
   // 当筛选条件变化时，如果当前显示的是表格，重新加载数据
   useEffect(() => {
@@ -176,6 +184,7 @@ export default function DailyProfitReport() {
             dateFrom,
             dateTo,
             selectedStore === "all" ? undefined : selectedStore,
+            selectedOperator === "all" ? undefined : selectedOperator,
             activeTab
           )
           if (result.success) {
@@ -193,7 +202,7 @@ export default function DailyProfitReport() {
       }
       loadOrders()
     }
-  }, [dateFrom, dateTo, selectedStore, activeTab])
+  }, [dateFrom, dateTo, selectedStore, selectedOperator, activeTab])
 
   // 处理选项卡点击
   const handleTabClick = async (tab: 'profit' | 'shipping' | 'orders' | 'lowProfitRate' | 'noShippingRefund' | null) => {
@@ -208,6 +217,7 @@ export default function DailyProfitReport() {
           dateFrom,
           dateTo,
           selectedStore === "all" ? undefined : selectedStore,
+          selectedOperator === "all" ? undefined : selectedOperator,
           tab
         )
         if (result.success) {
@@ -358,6 +368,66 @@ export default function DailyProfitReport() {
     }
   }
 
+  // 处理批量更新operator字段
+  const handleUpdateOperators = async () => {
+    if (!confirm('确定要批量更新现有订单的运营字段吗？系统将根据店铺名称自动匹配运营人员。')) {
+      return
+    }
+    
+    setUpdatingOperators(true)
+    setImportResult(null)
+    
+    try {
+      const result = await updateOperatorsForExistingOrders()
+      
+      setImportResult({
+        success: result.success,
+        message: result.message,
+        error: result.error,
+      })
+      
+      // 更新成功后，刷新数据
+      if (result.success && result.updated > 0) {
+        const statsResult = await fetchOrdersStatistics(
+          dateFrom,
+          dateTo,
+          selectedStore === "all" ? undefined : selectedStore,
+          selectedOperator === "all" ? undefined : selectedOperator
+        )
+        
+        if (statsResult.success && statsResult.data) {
+          const formattedDailyData: DailyData[] = statsResult.data.dailyData.map(item => ({
+            date: item.date,
+            dateLabel: format(new Date(item.date), "MM-dd"),
+            profit: item.profit,
+            shipping: item.shipping,
+          }))
+
+          setDailyData(formattedDailyData)
+          setStats({
+            totalProfit: statsResult.data.totalProfit,
+            totalShipping: statsResult.data.totalShipping,
+            totalOrders: statsResult.data.totalOrders || 0,
+            days: formattedDailyData.length,
+            lowProfitRateCount: statsResult.data.lowProfitRateCount,
+            noShippingRefundCount: statsResult.data.noShippingRefundCount,
+            shippingPercentage: statsResult.data.totalProfit > 0 
+              ? ((statsResult.data.totalShipping / statsResult.data.totalProfit) * 100).toFixed(1) 
+              : "0.0",
+          })
+        }
+      }
+    } catch (error: any) {
+      console.error('更新运营字段失败:', error)
+      setImportResult({
+        success: false,
+        error: error.message || '更新运营字段失败，请重试',
+      })
+    } finally {
+      setUpdatingOperators(false)
+    }
+  }
+
   // 处理文件选择（导入）
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -467,17 +537,40 @@ export default function DailyProfitReport() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={selectedOperator} onValueChange={setSelectedOperator}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="选择运营" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部运营</SelectItem>
+              {operatorList.map((operator) => (
+                <SelectItem key={operator} value={operator}>
+                  {operator}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <DateRangePicker
             dateFrom={dateFrom}
             dateTo={dateTo}
             onDateChange={handleDateChange}
             className="w-[280px]"
           />
+          {/* 更新运营字段 */}
+          <Button 
+            variant="outline" 
+            className="gap-2" 
+            disabled={updatingOperators || importing || recalculating}
+            onClick={handleUpdateOperators}
+          >
+            <RefreshCw className={`h-4 w-4 ${updatingOperators ? 'animate-spin' : ''}`} />
+            {updatingOperators ? '更新中...' : '更新运营字段'}
+          </Button>
           {/* 重新计算profit */}
           <Button 
             variant="outline" 
             className="gap-2" 
-            disabled={recalculating || importing}
+            disabled={recalculating || importing || updatingOperators}
             onClick={handleRecalculateProfit}
           >
             <RefreshCw className={`h-4 w-4 ${recalculating ? 'animate-spin' : ''}`} />
@@ -491,7 +584,7 @@ export default function DailyProfitReport() {
               accept=".xlsx,.xls"
               onChange={handleFileSelect}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              disabled={importing || recalculating}
+              disabled={importing || recalculating || updatingOperators}
             />
             <Button variant="outline" className="gap-2" disabled={importing || recalculating}>
               <Upload className="h-4 w-4" />

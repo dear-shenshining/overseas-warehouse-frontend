@@ -4,11 +4,13 @@
  */
 import { query, execute, getConnection } from '@/lib/db'
 import { PoolClient } from 'pg'
+import { getOperatorByStoreName } from '@/lib/operator-mapping'
 
 export interface OrderRecord {
   id?: number
   order_number: string
   store_name?: string
+  operator?: string // 运营人员
   payment_time?: Date | string
   platform_sku?: string
   logistics_channel?: string
@@ -36,6 +38,28 @@ const LOGISTICS_CHANNEL_FEE_MAP: Record<string, number> = {
   '大阪海外仓HW105日邮': 23,
   '大阪海外仓HW105黑猫投函': 12,
   '金焱焱海外仓': 12,
+}
+
+/**
+ * 检查orders表是否存在operator字段
+ * @param client 数据库客户端（可选）
+ * @returns 是否存在operator字段
+ */
+async function checkOperatorFieldExists(client?: PoolClient): Promise<boolean> {
+  try {
+    const checkSql = `
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'orders' AND column_name = 'operator'
+    `
+    const result = client 
+      ? await client.query(checkSql)
+      : await query<{ column_name: string }>(checkSql)
+    return result.length > 0
+  } catch (error) {
+    console.warn('检查operator字段失败:', error)
+    return false
+  }
 }
 
 /**
@@ -111,6 +135,9 @@ export async function importOrdersData(
     const batchSize = 1000
     const batches = Math.ceil(orders.length / batchSize)
 
+    // 检查operator字段是否存在（只检查一次）
+    const hasOperatorField = await checkOperatorFieldExists(client)
+
     for (let batchIndex = 0; batchIndex < batches; batchIndex++) {
       const start = batchIndex * batchSize
       const end = Math.min(start + batchSize, orders.length)
@@ -163,16 +190,29 @@ export async function importOrdersData(
           ? toNumeric((profit / productAndShippingCost) * 100)
           : 0
 
+        // 根据店铺名称自动匹配运营人员
+        const operator = order.operator || (order.store_name ? getOperatorByStoreName(order.store_name) : null)
+        
         const rowPlaceholders: string[] = []
-        for (let i = 0; i < 14; i++) { // 14个字段
+        const fieldCount = hasOperatorField ? 15 : 14 // 如果有operator字段，则15个字段
+        for (let i = 0; i < fieldCount; i++) {
           rowPlaceholders.push(`$${paramIndex++}`)
         }
         placeholders.push(`(${rowPlaceholders.join(', ')})`)
 
         // 确保所有值都符合数据库字段类型
-        values.push(
+        const rowValues: any[] = [
           String(order.order_number), // VARCHAR(255)
           order.store_name ? String(order.store_name) : null, // VARCHAR(255)
+        ]
+        
+        // 如果有operator字段，添加运营人员
+        if (hasOperatorField) {
+          rowValues.push(operator) // 在store_name之后添加operator
+        }
+        
+        // 添加其他字段
+        rowValues.push(
           order.payment_time || null, // TIMESTAMP
           order.platform_sku ? String(order.platform_sku) : null, // VARCHAR(255)
           order.logistics_channel ? String(order.logistics_channel) : null, // VARCHAR(255)
@@ -186,30 +226,19 @@ export async function importOrdersData(
           shippingRefund, // NUMERIC(10, 2)
           totalAmount // NUMERIC(10, 2)
         )
+        
+        values.push(...rowValues)
       }
 
       // 使用 INSERT ... ON CONFLICT 进行批量插入/更新
       // 明确指定NUMERIC类型转换，确保PostgreSQL正确理解数据类型
-      const insertSql = `
-        INSERT INTO orders (
-          order_number,
-          store_name,
-          payment_time,
-          platform_sku,
-          logistics_channel,
-          order_status,
-          total_product_cost,
-          actual_shipping_fee,
-          product_and_shipping_cost,
-          profit,
-          profit_rate,
-          sales_refund,
-          shipping_refund,
-          total_amount
-        ) VALUES ${placeholders.join(', ')}
-        ON CONFLICT (order_number) 
-        DO UPDATE SET
-          store_name = EXCLUDED.store_name,
+      const insertFields = hasOperatorField
+        ? `order_number, store_name, operator, payment_time, platform_sku, logistics_channel, order_status, total_product_cost, actual_shipping_fee, product_and_shipping_cost, profit, profit_rate, sales_refund, shipping_refund, total_amount`
+        : `order_number, store_name, payment_time, platform_sku, logistics_channel, order_status, total_product_cost, actual_shipping_fee, product_and_shipping_cost, profit, profit_rate, sales_refund, shipping_refund, total_amount`
+      
+      const updateFields = hasOperatorField
+        ? `store_name = EXCLUDED.store_name,
+          operator = EXCLUDED.operator,
           payment_time = EXCLUDED.payment_time,
           platform_sku = EXCLUDED.platform_sku,
           logistics_channel = EXCLUDED.logistics_channel,
@@ -222,7 +251,27 @@ export async function importOrdersData(
           sales_refund = EXCLUDED.sales_refund::NUMERIC(10, 2),
           shipping_refund = EXCLUDED.shipping_refund::NUMERIC(10, 2),
           total_amount = EXCLUDED.total_amount::NUMERIC(10, 2),
-          updated_at = CURRENT_TIMESTAMP
+          updated_at = CURRENT_TIMESTAMP`
+        : `store_name = EXCLUDED.store_name,
+          payment_time = EXCLUDED.payment_time,
+          platform_sku = EXCLUDED.platform_sku,
+          logistics_channel = EXCLUDED.logistics_channel,
+          order_status = EXCLUDED.order_status,
+          total_product_cost = EXCLUDED.total_product_cost::NUMERIC(10, 2),
+          actual_shipping_fee = EXCLUDED.actual_shipping_fee::NUMERIC(10, 2),
+          product_and_shipping_cost = EXCLUDED.product_and_shipping_cost::NUMERIC(10, 2),
+          profit = EXCLUDED.profit::NUMERIC(10, 2),
+          profit_rate = EXCLUDED.profit_rate::NUMERIC(10, 2),
+          sales_refund = EXCLUDED.sales_refund::NUMERIC(10, 2),
+          shipping_refund = EXCLUDED.shipping_refund::NUMERIC(10, 2),
+          total_amount = EXCLUDED.total_amount::NUMERIC(10, 2),
+          updated_at = CURRENT_TIMESTAMP`
+      
+      const insertSql = `
+        INSERT INTO orders (${insertFields})
+        VALUES ${placeholders.join(', ')}
+        ON CONFLICT (order_number) 
+        DO UPDATE SET ${updateFields}
       `
 
       const result = await client.query(insertSql, values)
@@ -277,6 +326,7 @@ export async function importOrdersData(
  * @param dateFrom 开始日期
  * @param dateTo 结束日期
  * @param storeName 店铺名（可选）
+ * @param operator 运营人员（可选）
  * @param filterType 筛选类型（可选）
  * @returns 订单数据数组
  */
@@ -284,6 +334,7 @@ export async function getOrdersData(
   dateFrom?: string,
   dateTo?: string,
   storeName?: string,
+  operator?: string,
   filterType?: 'lowProfitRate' | 'noShippingRefund'
 ): Promise<OrderRecord[]> {
   try {
@@ -320,6 +371,31 @@ export async function getOrdersData(
       paramIndex++
     }
 
+    // 运营筛选
+    if (operator && operator !== 'all') {
+      // 检查operator字段是否存在
+      const hasOperatorField = await checkOperatorFieldExists()
+      if (hasOperatorField) {
+        sql += ` AND operator = $${paramIndex}`
+        params.push(operator)
+        paramIndex++
+      } else {
+        // 如果operator字段不存在，根据店铺名称筛选
+        // 获取该运营人员对应的店铺列表
+        const { getStoresByOperator } = await import('@/lib/operator-mapping')
+        const stores = getStoresByOperator(operator)
+        if (stores.length > 0) {
+          const storePlaceholders = stores.map((_, i) => `$${paramIndex + i}`).join(',')
+          sql += ` AND store_name IN (${storePlaceholders})`
+          params.push(...stores)
+          paramIndex += stores.length
+        } else {
+          // 如果没有找到对应的店铺，返回空结果
+          sql += ` AND 1=0`
+        }
+      }
+    }
+
     // 根据筛选类型添加SQL条件（在数据库层面过滤，提高性能）
     if (filterType === 'lowProfitRate') {
       // 毛利率低于20%的订单
@@ -345,12 +421,14 @@ export async function getOrdersData(
  * @param dateFrom 开始日期
  * @param dateTo 结束日期
  * @param storeName 店铺名（可选）
+ * @param operator 运营人员（可选）
  * @returns 统计数据
  */
 export async function getOrdersStatistics(
   dateFrom?: string,
   dateTo?: string,
-  storeName?: string
+  storeName?: string,
+  operator?: string
 ): Promise<{
   totalProfit: number // 总毛利（profit字段的总和）
   totalShipping: number
@@ -364,8 +442,8 @@ export async function getOrdersStatistics(
   }>
 }> {
   try {
-    console.log('getOrdersStatistics 调用参数:', { dateFrom, dateTo, storeName })
-    const orders = await getOrdersData(dateFrom, dateTo, storeName)
+    console.log('getOrdersStatistics 调用参数:', { dateFrom, dateTo, storeName, operator })
+    const orders = await getOrdersData(dateFrom, dateTo, storeName, operator)
     console.log(`获取到 ${orders.length} 条订单`)
 
     // 按日期分组统计
@@ -534,6 +612,102 @@ export async function getStoreList(): Promise<string[]> {
 }
 
 /**
+ * 批量更新现有订单的operator字段
+ * 根据店铺名称匹配运营人员
+ * @returns 更新结果
+ */
+export async function updateOperatorsForExistingOrders(): Promise<{
+  success: boolean
+  updated: number
+  error?: string
+}> {
+  try {
+    // 检查operator字段是否存在
+    const hasOperatorField = await checkOperatorFieldExists()
+    if (!hasOperatorField) {
+      return {
+        success: false,
+        updated: 0,
+        error: 'operator字段不存在，请先执行数据库迁移脚本',
+      }
+    }
+
+    const { getOperatorByStoreName } = await import('@/lib/operator-mapping')
+
+    // 获取所有有店铺名称但operator为空的订单
+    const selectSql = `
+      SELECT DISTINCT store_name 
+      FROM orders 
+      WHERE store_name IS NOT NULL 
+        AND store_name != '' 
+        AND (operator IS NULL OR operator = '')
+      ORDER BY store_name
+    `
+    const stores = await query<{ store_name: string }>(selectSql)
+
+    if (stores.length === 0) {
+      return {
+        success: true,
+        updated: 0,
+      }
+    }
+
+    console.log(`找到 ${stores.length} 个需要更新operator的店铺`)
+
+    let client: PoolClient | null = null
+    let totalUpdated = 0
+
+    try {
+      client = await getConnection()
+      await client.query('BEGIN')
+
+      // 批量更新每个店铺的operator
+      for (const store of stores) {
+        const operator = getOperatorByStoreName(store.store_name)
+        if (operator) {
+          const updateSql = `
+            UPDATE orders 
+            SET operator = $1, updated_at = CURRENT_TIMESTAMP
+            WHERE store_name = $2 
+              AND (operator IS NULL OR operator = '')
+          `
+          const result = await client.query(updateSql, [operator, store.store_name])
+          const updated = result.rowCount || 0
+          totalUpdated += updated
+          console.log(`更新店铺 "${store.store_name}" 的 ${updated} 条订单，运营人员: ${operator}`)
+        } else {
+          console.warn(`未找到店铺 "${store.store_name}" 对应的运营人员`)
+        }
+      }
+
+      await client.query('COMMIT')
+      console.log(`成功更新 ${totalUpdated} 条订单的operator字段`)
+
+      return {
+        success: true,
+        updated: totalUpdated,
+      }
+    } catch (error: any) {
+      if (client) {
+        await client.query('ROLLBACK')
+      }
+      throw error
+    } finally {
+      if (client) {
+        client.release()
+      }
+    }
+  } catch (error: any) {
+    console.error('批量更新operator字段失败:', error)
+    return {
+      success: false,
+      updated: 0,
+      error: error.message || '批量更新operator字段失败',
+    }
+  }
+}
+
+/**
  * 批量重新计算profit字段（用于修复旧数据）
  * 如果profit为0或null，但total_amount不为0，则重新计算profit
  */
@@ -669,12 +843,14 @@ export async function recalculateProfit(): Promise<{
  * @param dateFrom 开始日期（可选，格式：YYYY-MM-DD）
  * @param dateTo 结束日期（可选，格式：YYYY-MM-DD）
  * @param storeName 店铺名称（可选）
+ * @param operator 运营人员（可选）
  * @returns 异常SKU数据
  */
 export async function getAnomalySKUs(
   dateFrom?: string,
   dateTo?: string,
-  storeName?: string
+  storeName?: string,
+  operator?: string
 ): Promise<{
   totalCount: number // 筛选范围内的总订单数量
   lowProfitRateCount: number // 毛利率低的订单数量
@@ -719,6 +895,30 @@ export async function getAnomalySKUs(
       whereConditions.push(`store_name = $${paramIndex}`)
       params.push(storeName)
       paramIndex++
+    }
+
+    // 运营筛选
+    if (operator && operator !== 'all') {
+      // 检查operator字段是否存在
+      const hasOperatorField = await checkOperatorFieldExists()
+      if (hasOperatorField) {
+        whereConditions.push(`operator = $${paramIndex}`)
+        params.push(operator)
+        paramIndex++
+      } else {
+        // 如果operator字段不存在，根据店铺名称筛选
+        const { getStoresByOperator } = await import('@/lib/operator-mapping')
+        const stores = getStoresByOperator(operator)
+        if (stores.length > 0) {
+          const storePlaceholders = stores.map((_, i) => `$${paramIndex + i}`).join(',')
+          whereConditions.push(`store_name IN (${storePlaceholders})`)
+          params.push(...stores)
+          paramIndex += stores.length
+        } else {
+          // 如果没有找到对应的店铺，返回空结果
+          whereConditions.push(`1=0`)
+        }
+      }
     }
 
     const whereClause = whereConditions.join(' AND ')
