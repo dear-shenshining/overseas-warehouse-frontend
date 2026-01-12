@@ -861,7 +861,7 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
  */
 export async function getTaskChargeList(): Promise<string[]> {
   try {
-    const sql = 'SELECT DISTINCT charge FROM task WHERE charge IS NOT NULL AND charge != "" ORDER BY charge'
+    const sql = `SELECT DISTINCT charge FROM task WHERE charge IS NOT NULL AND charge != '' ORDER BY charge`
     const results = await query<{ charge: string }>(sql)
     return results.map((row) => row.charge).filter((charge) => charge && charge.trim() !== '')
   } catch (error) {
@@ -1037,7 +1037,7 @@ export async function getTaskHistoryStatistics(): Promise<TaskHistoryStatistics>
  */
 export async function getTaskHistoryChargeList(): Promise<string[]> {
   try {
-    const sql = 'SELECT DISTINCT charge FROM task_history WHERE charge IS NOT NULL AND charge != "" ORDER BY charge'
+    const sql = `SELECT DISTINCT charge FROM task_history WHERE charge IS NOT NULL AND charge != '' ORDER BY charge`
     const results = await query<{ charge: string }>(sql)
     return results.map((row) => row.charge).filter((charge) => charge && charge.trim() !== '')
   } catch (error) {

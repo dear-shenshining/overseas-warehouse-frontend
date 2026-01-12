@@ -54,6 +54,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
   const [searchDialogOpen, setSearchDialogOpen] = useState(false)
   const [searchResult, setSearchResult] = useState<{total: number, found: number, notFound: string[]} | null>(null)
+  const [actualSearchNumbers, setActualSearchNumbers] = useState<string[]>([]) // 实际搜索到的单号列表
   const [currentPage, setCurrentPage] = useState(1)
   const [totalRecords, setTotalRecords] = useState(0)
   const [totalPages, setTotalPages] = useState(0)
@@ -271,6 +272,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     
     if (searchNumbers.length === 1) {
       // 单个单号，直接搜索
+      setActualSearchNumbers(searchNumbers) // 保存搜索的单号
       startTransition(() => {
         loadLogisticsData(searchNumbers[0], statusFilter, 1)
       })
@@ -287,10 +289,12 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         
         // 使用找到的单号进行查询
         if (result.found.length > 0) {
+          setActualSearchNumbers(result.found) // 保存实际找到的单号
           startTransition(() => {
             loadLogisticsData(result.found.join(','), statusFilter, 1)
           })
         } else {
+          setActualSearchNumbers([]) // 没有找到，清空
           setLogisticsData([])
           setTotalRecords(0)
           setTotalPages(0)
@@ -302,6 +306,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 清空搜索
   const handleClearSearch = () => {
     setSearchQuery("")
+    setActualSearchNumbers([]) // 清空实际搜索到的单号列表
     startTransition(() => {
       loadLogisticsData(undefined, statusFilter, 1)
     })
@@ -330,6 +335,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     setDateFrom("")
     setDateTo("")
     setSearchQuery("")
+    setActualSearchNumbers([]) // 清空实际搜索到的单号列表
     startTransition(() => {
       loadLogisticsData(undefined, null, 1)
     })
@@ -728,9 +734,32 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       // 显示加载提示（使用console而不是alert，避免阻塞）
       console.log("正在准备导出数据，请稍候...")
       
+      // 确定要导出的搜索单号：如果有实际搜索到的单号列表，使用它；否则使用searchQuery
+      let exportSearchQuery: string | undefined = undefined
+      if (actualSearchNumbers.length > 0) {
+        // 如果有实际搜索到的单号，使用它们（逗号分隔）
+        exportSearchQuery = actualSearchNumbers.join(',')
+      } else if (searchQuery && searchQuery.trim()) {
+        // 如果没有实际搜索到的单号列表，但有搜索输入，解析并查询
+        const searchNumbers = parseSearchNumbers(searchQuery)
+        if (searchNumbers.length > 0) {
+          // 先批量查询哪些单号存在
+          const batchResult = await batchSearchLogistics(searchNumbers)
+          if (batchResult.success && batchResult.found.length > 0) {
+            exportSearchQuery = batchResult.found.join(',')
+          } else {
+            // 如果没有找到任何单号，提示用户
+            alert("没有找到可导出的数据")
+            return
+          }
+        } else {
+          exportSearchQuery = searchQuery.trim()
+        }
+      }
+      
       // 获取所有筛选后的数据（不分页，使用很大的pageSize）
       const result = await fetchLogisticsData(
-        searchQuery || undefined,
+        exportSearchQuery,
         statusFilter || undefined,
         dateFrom && dateFrom.trim() ? dateFrom : undefined,
         dateTo && dateTo.trim() ? dateTo : undefined,
@@ -870,9 +899,32 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       // 显示加载提示
       console.log("正在准备导出今日数据，请稍候...")
       
+      // 确定要导出的搜索单号：如果有实际搜索到的单号列表，使用它；否则使用searchQuery
+      let exportSearchQuery: string | undefined = undefined
+      if (actualSearchNumbers.length > 0) {
+        // 如果有实际搜索到的单号，使用它们（逗号分隔）
+        exportSearchQuery = actualSearchNumbers.join(',')
+      } else if (searchQuery && searchQuery.trim()) {
+        // 如果没有实际搜索到的单号列表，但有搜索输入，解析并查询
+        const searchNumbers = parseSearchNumbers(searchQuery)
+        if (searchNumbers.length > 0) {
+          // 先批量查询哪些单号存在
+          const batchResult = await batchSearchLogistics(searchNumbers)
+          if (batchResult.success && batchResult.found.length > 0) {
+            exportSearchQuery = batchResult.found.join(',')
+          } else {
+            // 如果没有找到任何单号，提示用户
+            alert("没有找到可导出的数据")
+            return
+          }
+        } else {
+          exportSearchQuery = searchQuery.trim()
+        }
+      }
+      
       // 获取所有筛选后的数据（不分页，使用很大的pageSize），并限制为今天创建的数据
       const result = await fetchLogisticsData(
-        searchQuery || undefined,
+        exportSearchQuery,
         statusFilter || undefined,
         dateFrom && dateFrom.trim() ? dateFrom : undefined,
         dateTo && dateTo.trim() ? dateTo : undefined,
