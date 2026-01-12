@@ -430,6 +430,7 @@ export async function getOrdersStatistics(
   storeName?: string,
   operator?: string
 ): Promise<{
+  totalAmount: number // 结算总金额（total_amount字段的总和）
   totalProfit: number // 总毛利（profit字段的总和）
   totalShipping: number
   totalOrders: number
@@ -442,151 +443,130 @@ export async function getOrdersStatistics(
   }>
 }> {
   try {
-    console.log('getOrdersStatistics 调用参数:', { dateFrom, dateTo, storeName, operator })
-    const orders = await getOrdersData(dateFrom, dateTo, storeName, operator)
-    console.log(`获取到 ${orders.length} 条订单`)
+    const { query } = await import('@/lib/db')
+    
+    // 构建基础WHERE条件
+    let whereConditions = ['payment_time IS NOT NULL']
+    const params: any[] = []
+    let paramIndex = 1
 
-    // 按日期分组统计
-    const dailyMap = new Map<string, { profit: number; shipping: number }>()
+    if (dateFrom) {
+      whereConditions.push(`payment_time::date >= $${paramIndex}::date`)
+      params.push(dateFrom)
+      paramIndex++
+    }
 
-    let totalProfit = 0 // 总毛利
-    let totalShipping = 0
-    let lowProfitRateCount = 0 // 毛利率低于20的数量
-    let noShippingRefundCount = 0 // 运费回款为0的数量
+    if (dateTo) {
+      whereConditions.push(`payment_time::date <= $${paramIndex}::date`)
+      params.push(dateTo)
+      paramIndex++
+    }
 
-    orders.forEach((order, index) => {
-      // 处理payment_time，提取日期部分
-      // 数据库时区设置为 Asia/Shanghai，返回的时间已经是数据库时区的时间
-      // 直接提取日期部分，避免时区转换问题
-      let date: string | null = null
-      if (order.payment_time) {
-        if (typeof order.payment_time === 'string') {
-          // 如果是字符串，直接提取日期部分（格式：YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS）
-          // 数据库返回的时间格式可能是：'2025-12-05 23:00:00' 或 '2025-12-05T23:00:00'
-          const dateMatch = order.payment_time.match(/^(\d{4}-\d{2}-\d{2})/)
-          if (dateMatch) {
-            date = dateMatch[1]
-          } else {
-            // 如果没有匹配到，尝试直接分割
-            date = order.payment_time.split('T')[0].split(' ')[0]
-          }
+    if (storeName && storeName !== 'all') {
+      whereConditions.push(`store_name = $${paramIndex}`)
+      params.push(storeName)
+      paramIndex++
+    }
+
+    // 运营筛选
+    if (operator && operator !== 'all') {
+      // 检查operator字段是否存在
+      const { checkOperatorFieldExists } = await import('@/lib/orders-data')
+      const hasOperatorField = await checkOperatorFieldExists()
+      if (hasOperatorField) {
+        whereConditions.push(`operator = $${paramIndex}`)
+        params.push(operator)
+        paramIndex++
+      } else {
+        // 如果operator字段不存在，根据店铺名称筛选
+        const { getStoresByOperator } = await import('@/lib/operator-mapping')
+        const stores = getStoresByOperator(operator)
+        if (stores.length > 0) {
+          const storePlaceholders = stores.map((_, i) => `$${paramIndex + i}`).join(',')
+          whereConditions.push(`store_name IN (${storePlaceholders})`)
+          params.push(...stores)
+          paramIndex += stores.length
         } else {
-          // 如果是Date对象，PostgreSQL返回的Date对象已经是数据库时区的时间
-          // 直接使用本地时间的日期部分（因为数据库时区是 Asia/Shanghai，与本地时区一致）
-          const dateObj = new Date(order.payment_time)
-          // 使用本地时间方法获取日期部分（数据库返回的时间已经是数据库时区）
-          const year = dateObj.getFullYear()
-          const month = String(dateObj.getMonth() + 1).padStart(2, '0')
-          const day = String(dateObj.getDate()).padStart(2, '0')
-          date = `${year}-${month}-${day}`
+          // 如果没有找到对应的店铺，返回空结果
+          whereConditions.push(`1=0`)
         }
       }
+    }
 
-      if (!date) {
-        console.warn('订单缺少payment_time:', order.order_number)
-        return
+    const whereClause = whereConditions.join(' AND ')
+
+    // 使用SQL聚合查询直接在数据库层面计算统计数据，大幅提升性能
+    const statsSql = `
+      SELECT 
+        COUNT(*) as total_orders,
+        COALESCE(SUM(total_amount), 0) as total_amount,
+        COALESCE(SUM(profit), 0) as total_profit,
+        COALESCE(SUM(actual_shipping_fee), 0) as total_shipping,
+        COUNT(CASE WHEN profit_rate IS NOT NULL AND profit_rate < 20 THEN 1 END) as low_profit_rate_count,
+        COUNT(CASE WHEN shipping_refund IS NULL OR shipping_refund = 0 THEN 1 END) as no_shipping_refund_count
+      FROM orders
+      WHERE ${whereClause}
+    `
+
+    // 按日期分组统计每日数据
+    const dailyDataSql = `
+      SELECT 
+        payment_time::date as date,
+        COALESCE(SUM(profit), 0) as profit,
+        COALESCE(SUM(actual_shipping_fee), 0) as shipping
+      FROM orders
+      WHERE ${whereClause}
+      GROUP BY payment_time::date
+      ORDER BY payment_time::date ASC
+    `
+
+    const [statsResult, dailyDataResult] = await Promise.all([
+      query<{
+        total_orders: string
+        total_amount: string
+        total_profit: string
+        total_shipping: string
+        low_profit_rate_count: string
+        no_shipping_refund_count: string
+      }>(statsSql, params),
+      query<{
+        date: Date | string
+        profit: string
+        shipping: string
+      }>(dailyDataSql, params),
+    ])
+
+    const stats = statsResult[0]
+    const totalAmount = parseFloat(stats?.total_amount || '0')
+    const totalProfit = parseFloat(stats?.total_profit || '0')
+    const totalShipping = parseFloat(stats?.total_shipping || '0')
+    const totalOrders = parseInt(stats?.total_orders || '0', 10)
+    const lowProfitRateCount = parseInt(stats?.low_profit_rate_count || '0', 10)
+    const noShippingRefundCount = parseInt(stats?.no_shipping_refund_count || '0', 10)
+
+    // 格式化每日数据
+    const dailyData = dailyDataResult.map(row => {
+      let dateStr: string
+      if (row.date instanceof Date) {
+        const year = row.date.getFullYear()
+        const month = String(row.date.getMonth() + 1).padStart(2, '0')
+        const day = String(row.date.getDate()).padStart(2, '0')
+        dateStr = `${year}-${month}-${day}`
+      } else {
+        dateStr = String(row.date).split('T')[0].split(' ')[0]
       }
-
-      // 辅助函数：将值转换为数字（NUMERIC(10, 2) 格式）
-      const toNumeric = (value: any): number => {
-        if (value === null || value === undefined || value === '') {
-          return 0
-        }
-        const num = typeof value === 'number' ? value : parseFloat(String(value))
-        if (isNaN(num) || !isFinite(num)) {
-          return 0
-        }
-        // 四舍五入到2位小数，符合 NUMERIC(10, 2) 格式
-        return Math.round(num * 100) / 100
+      return {
+        date: dateStr,
+        profit: parseFloat(row.profit || '0'),
+        shipping: parseFloat(row.shipping || '0'),
       }
-      
-      // 使用profit字段作为毛利，如果profit为null或undefined，尝试重新计算
-      let profit = toNumeric(order.profit)
-      
-      // 如果profit为0或null，尝试重新计算（可能是旧数据没有计算profit）
-      if (profit === 0 && order.total_amount && toNumeric(order.total_amount) !== 0) {
-        // 优先使用已存储的product_and_shipping_cost字段
-        let productAndShippingCost = toNumeric(order.product_and_shipping_cost)
-        if (productAndShippingCost === 0) {
-          // 如果没有存储，则重新计算
-          const productCost = toNumeric(order.total_product_cost)
-          const shippingFee = toNumeric(order.actual_shipping_fee)
-          productAndShippingCost = toNumeric(productCost + shippingFee)
-        }
-        const totalAmount = toNumeric(order.total_amount)
-        profit = toNumeric(totalAmount - productAndShippingCost)
-        console.log(`订单 ${order.order_number} profit字段为0，重新计算: total_amount=${totalAmount}, product_and_shipping_cost=${productAndShippingCost}, profit=${profit}`)
-      }
-      
-      const shipping = toNumeric(order.actual_shipping_fee)
-
-      // 前10条订单的详细日志（增加日志数量以便排查）
-      if (index < 10) {
-        console.log(`订单 ${index + 1} 详情:`, {
-          order_number: order.order_number,
-          payment_time: order.payment_time,
-          date,
-          total_amount: order.total_amount,
-          total_product_cost: order.total_product_cost,
-          actual_shipping_fee: order.actual_shipping_fee,
-          product_and_shipping_cost: order.product_and_shipping_cost,
-          profit_raw: order.profit,
-          profit_type: typeof order.profit,
-          profit_calculated: profit,
-          profit_rate_raw: order.profit_rate,
-          profit_rate_type: typeof order.profit_rate,
-          shipping_refund_raw: order.shipping_refund,
-          shipping_refund_type: typeof order.shipping_refund,
-          store_name: order.store_name,
-        })
-      }
-
-      totalProfit += profit
-      totalShipping += shipping
-
-      // 统计毛利率低于20的数量
-      const profitRate = toNumeric(order.profit_rate)
-      if (profitRate !== 0 && profitRate < 20) {
-        lowProfitRateCount++
-      }
-
-      // 统计运费回款为0的数量（包括null、undefined和0）
-      const shippingRefund = toNumeric(order.shipping_refund)
-      if (shippingRefund === 0) {
-        noShippingRefundCount++
-      }
-
-      if (!dailyMap.has(date)) {
-        dailyMap.set(date, { profit: 0, shipping: 0 })
-      }
-
-      const daily = dailyMap.get(date)!
-      daily.profit += profit
-      daily.shipping += shipping
-    })
-
-    // 转换为数组并排序
-    const dailyData = Array.from(dailyMap.entries())
-      .map(([date, data]) => ({
-        date,
-        profit: data.profit,
-        shipping: data.shipping,
-      }))
-      .sort((a, b) => a.date.localeCompare(b.date))
-
-    console.log('统计结果:', {
-      totalProfit,
-      totalShipping,
-      totalOrders: orders.length,
-      lowProfitRateCount,
-      noShippingRefundCount,
-      dailyDataCount: dailyData.length,
     })
 
     return {
-      totalProfit,
-      totalShipping,
-      totalOrders: orders.length,
+      totalAmount: Math.round(totalAmount * 100) / 100,
+      totalProfit: Math.round(totalProfit * 100) / 100,
+      totalShipping: Math.round(totalShipping * 100) / 100,
+      totalOrders,
       lowProfitRateCount,
       noShippingRefundCount,
       dailyData,

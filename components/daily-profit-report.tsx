@@ -93,7 +93,9 @@ export default function DailyProfitReport() {
   const [operatorList, setOperatorList] = useState<string[]>([])
   const [dailyData, setDailyData] = useState<DailyData[]>([])
   const [stats, setStats] = useState({
+    totalAmount: 0,
     totalProfit: 0,
+    totalProfitRate: 0, // 总毛利率（总毛利/结算总金额）
     totalShipping: 0,
     totalOrders: 0,
     days: 0,
@@ -122,15 +124,12 @@ export default function DailyProfitReport() {
     const loadData = async () => {
       setLoading(true)
       try {
-        console.log('加载数据，参数:', { dateFrom, dateTo, selectedStore, selectedOperator })
         const result = await fetchOrdersStatistics(
           dateFrom,
           dateTo,
           selectedStore === "all" ? undefined : selectedStore,
           selectedOperator === "all" ? undefined : selectedOperator
         )
-        
-        console.log('获取到的数据结果:', result)
         
         if (result.success && result.data) {
           // 转换每日数据格式
@@ -141,17 +140,14 @@ export default function DailyProfitReport() {
             shipping: item.shipping,
           }))
 
-          console.log('格式化后的每日数据:', formattedDailyData)
-          console.log('统计数据:', {
-            totalProfit: result.data.totalProfit,
-            totalShipping: result.data.totalShipping,
-            lowProfitRateCount: result.data.lowProfitRateCount,
-            noShippingRefundCount: result.data.noShippingRefundCount,
-          })
-
           setDailyData(formattedDailyData)
+          const totalAmount = (result.data as any).totalAmount || 0
+          const totalProfit = result.data.totalProfit
+          const totalProfitRate = totalAmount > 0 ? (totalProfit / totalAmount) * 100 : 0
           setStats({
-            totalProfit: result.data.totalProfit,
+            totalAmount,
+            totalProfit,
+            totalProfitRate: Math.round(totalProfitRate * 100) / 100, // 保留2位小数
             totalShipping: result.data.totalShipping,
             totalOrders: result.data.totalOrders || 0,
             days: formattedDailyData.length,
@@ -344,8 +340,13 @@ export default function DailyProfitReport() {
           }))
 
           setDailyData(formattedDailyData)
+          const totalAmount = (statsResult.data as any).totalAmount || 0
+          const totalProfit = statsResult.data.totalProfit
+          const totalProfitRate = totalAmount > 0 ? (totalProfit / totalAmount) * 100 : 0
           setStats({
-            totalProfit: statsResult.data.totalProfit,
+            totalAmount,
+            totalProfit,
+            totalProfitRate: Math.round(totalProfitRate * 100) / 100, // 保留2位小数
             totalShipping: statsResult.data.totalShipping,
             totalOrders: statsResult.data.totalOrders || 0,
             days: formattedDailyData.length,
@@ -404,8 +405,13 @@ export default function DailyProfitReport() {
           }))
 
           setDailyData(formattedDailyData)
+          const totalAmount = (statsResult.data as any).totalAmount || 0
+          const totalProfit = statsResult.data.totalProfit
+          const totalProfitRate = totalAmount > 0 ? (totalProfit / totalAmount) * 100 : 0
           setStats({
-            totalProfit: statsResult.data.totalProfit,
+            totalAmount,
+            totalProfit,
+            totalProfitRate: Math.round(totalProfitRate * 100) / 100, // 保留2位小数
             totalShipping: statsResult.data.totalShipping,
             totalOrders: statsResult.data.totalOrders || 0,
             days: formattedDailyData.length,
@@ -481,8 +487,13 @@ export default function DailyProfitReport() {
           }))
 
           setDailyData(formattedDailyData)
+          const totalAmount = (statsResult.data as any).totalAmount || 0
+          const totalProfit = statsResult.data.totalProfit
+          const totalProfitRate = totalAmount > 0 ? (totalProfit / totalAmount) * 100 : 0
           setStats({
-            totalProfit: statsResult.data.totalProfit,
+            totalAmount,
+            totalProfit,
+            totalProfitRate: Math.round(totalProfitRate * 100) / 100, // 保留2位小数
             totalShipping: statsResult.data.totalShipping,
             totalOrders: statsResult.data.totalOrders || 0,
             days: formattedDailyData.length,
@@ -618,8 +629,8 @@ export default function DailyProfitReport() {
 
       {/* 统计卡片 */}
       {loading ? (
-        <div className="grid grid-cols-5 gap-3">
-          {[1, 2, 3, 4, 5].map((i) => (
+        <div className="grid grid-cols-7 gap-3">
+          {[1, 2, 3, 4, 5, 6, 7].map((i) => (
             <Card key={i} className="p-4">
               <div className="animate-pulse">
                 <div className="h-4 bg-gray-200 rounded w-1/2 mb-2"></div>
@@ -629,7 +640,28 @@ export default function DailyProfitReport() {
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-7 gap-3">
+          {/* 结算总金额 */}
+          <Card 
+            className={`p-4 cursor-pointer transition-all hover:shadow-md ${
+              activeTab === null ? 'ring-2 ring-primary ring-offset-2' : ''
+            }`}
+            onClick={() => handleTabClick(null)}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">结算总金额</p>
+                <p className="text-2xl font-semibold text-foreground">{formatCurrency(stats.totalAmount)}</p>
+              </div>
+              <div className="p-2.5 bg-chart-1/10 rounded-lg">
+                <DollarSign className="h-5 w-5 text-chart-1" />
+              </div>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              筛选条件下的总金额
+            </div>
+          </Card>
+
           {/* 总毛利 */}
           <Card 
             className={`p-4 cursor-pointer transition-all hover:shadow-md ${
@@ -648,6 +680,22 @@ export default function DailyProfitReport() {
             </div>
             <div className="text-sm text-muted-foreground">
               总毛利金额
+            </div>
+          </Card>
+
+          {/* 总毛利率 */}
+          <Card className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">总毛利率</p>
+                <p className="text-2xl font-semibold text-foreground">{stats.totalProfitRate.toFixed(2)}%</p>
+              </div>
+              <div className="p-2.5 bg-chart-2/10 rounded-lg">
+                <TrendingUp className="h-5 w-5 text-chart-2" />
+              </div>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              总毛利 / 结算总金额
             </div>
           </Card>
 

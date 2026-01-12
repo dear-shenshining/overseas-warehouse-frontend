@@ -342,6 +342,7 @@ export async function fetchOrdersStatistics(
     return {
       success: true,
       data: {
+        totalAmount: stats.totalAmount,
         totalProfit: stats.totalProfit,
         totalShipping: stats.totalShipping,
         totalOrders: stats.totalOrders,
@@ -356,6 +357,7 @@ export async function fetchOrdersStatistics(
       success: false,
       error: error.message || '获取订单统计数据失败',
       data: {
+        totalAmount: 0,
         totalProfit: 0,
         totalShipping: 0,
         totalOrders: 0,
