@@ -48,6 +48,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   })
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null>(null)
+  const [hasTransferFilter, setHasTransferFilter] = useState(false)
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
   const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
@@ -175,13 +176,11 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         const [dataResult, statsResult] = await Promise.allSettled([
             fetchLogisticsData(
               undefined, 
-              statusFilter || undefined, 
+              hasTransferFilter ? 'has_transfer' : statusFilter || undefined, 
               undefined, // 初始加载时不使用日期筛选
               undefined, // 初始加载时不使用日期筛选
               1, // page
-              pageSize,
-              false, // createdAtToday
-              hasTransferFilter // hasTransferFilter
+              pageSize
             ),
           fetchLogisticsStatistics(
             undefined, // 初始加载时不使用日期筛选
