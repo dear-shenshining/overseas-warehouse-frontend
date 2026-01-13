@@ -259,7 +259,7 @@ export default function DailyProfitAnomaly() {
                 </div>
               </div>
               <div className="text-sm text-muted-foreground">
-                毛利率低或无运费补贴
+                毛利率低或无运费补贴，占比：{stats.totalCount > 0 ? ((stats.anomalyCount / stats.totalCount) * 100).toFixed(1) : '0.0'}%（异常数量/总数量）
               </div>
             </Card>
 
@@ -275,7 +275,7 @@ export default function DailyProfitAnomaly() {
                 </div>
               </div>
               <div className="text-sm text-muted-foreground">
-                毛利率低于20%的订单
+                毛利率低于20%的订单，占比：{stats.totalCount > 0 ? ((stats.lowProfitRateCount / stats.totalCount) * 100).toFixed(1) : '0.0'}%（毛利率低数量/总数量）
               </div>
             </Card>
 
@@ -291,28 +291,10 @@ export default function DailyProfitAnomaly() {
                 </div>
               </div>
               <div className="text-sm text-muted-foreground">
-                运费回款为0的订单
+                运费回款为0的订单，占比：{stats.totalCount > 0 ? ((stats.noShippingRefundCount / stats.totalCount) * 100).toFixed(1) : '0.0'}%（无运费补贴数量/总数量）
               </div>
             </Card>
           </div>
-
-          {/* 异常率卡片 */}
-          <Card className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground mb-1">异常率</p>
-                <p className="text-3xl font-semibold text-foreground text-orange-500">
-                  {stats.anomalyRate.toFixed(2)}%
-                </p>
-              </div>
-              <div className="p-3 bg-orange-500/10 rounded-lg">
-                <AlertTriangle className="h-6 w-6 text-orange-500" />
-              </div>
-            </div>
-            <div className="text-sm text-muted-foreground mt-2">
-              异常订单数 / 总订单数 × 100%
-            </div>
-          </Card>
 
           {/* SKU列表 */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -756,8 +756,8 @@ export default function DailyProfitReport() {
 
       {/* 统计卡片 */}
       {loading ? (
-        <div className="grid grid-cols-7 gap-3">
-          {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+        <div className="grid grid-cols-6 gap-3">
+          {[1, 2, 3, 4, 5, 6].map((i) => (
             <Card key={i} className="p-4">
               <div className="animate-pulse">
                 <div className="h-4 bg-gray-200 rounded w-1/2 mb-2"></div>
@@ -767,7 +767,7 @@ export default function DailyProfitReport() {
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-7 gap-3">
+        <div className="grid grid-cols-6 gap-3">
           {/* 结算总金额 */}
           <Card 
             className={`p-4 cursor-pointer transition-all hover:shadow-md ${
@@ -806,23 +806,7 @@ export default function DailyProfitReport() {
               </div>
             </div>
             <div className="text-sm text-muted-foreground">
-              总毛利金额
-            </div>
-          </Card>
-
-          {/* 总毛利率 */}
-          <Card className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <p className="text-sm text-muted-foreground mb-1">总毛利率</p>
-                <p className="text-2xl font-semibold text-foreground">{stats.totalProfitRate.toFixed(2)}%</p>
-              </div>
-              <div className="p-2.5 bg-chart-2/10 rounded-lg">
-                <TrendingUp className="h-5 w-5 text-chart-2" />
-              </div>
-            </div>
-            <div className="text-sm text-muted-foreground">
-              总毛利 / 结算总金额
+              总毛利率：{stats.totalProfitRate.toFixed(2)}%（总毛利/结算总金额）
             </div>
           </Card>
 
@@ -887,7 +871,7 @@ export default function DailyProfitReport() {
             </div>
           </div>
             <div className="text-sm text-muted-foreground">
-              毛利率低于20%的订单数量
+              毛利率于20%订单占比：{stats.totalOrders > 0 ? ((stats.lowProfitRateCount / stats.totalOrders) * 100).toFixed(1) : '0.0'}%（毛利率低数量/总订单数量）
           </div>
         </Card>
 
@@ -908,7 +892,7 @@ export default function DailyProfitReport() {
               </div>
             </div>
             <div className="text-sm text-muted-foreground">
-              运费回款为0的订单数量
+              运费回款为0的订单占比：{stats.totalOrders > 0 ? ((stats.noShippingRefundCount / stats.totalOrders) * 100).toFixed(1) : '0.0'}%（无运费补贴数量/总订单数量）
             </div>
           </Card>
         </div>
