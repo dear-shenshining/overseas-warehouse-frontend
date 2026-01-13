@@ -173,17 +173,19 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
         // 并行加载数据和统计
         const [dataResult, statsResult] = await Promise.allSettled([
-          fetchLogisticsData(
-            undefined, 
-            statusFilter || undefined, 
-            dateFrom && dateFrom.trim() ? dateFrom : undefined,
-            dateTo && dateTo.trim() ? dateTo : undefined,
-            1, // page
-            pageSize
-          ),
+            fetchLogisticsData(
+              undefined, 
+              statusFilter || undefined, 
+              undefined, // 初始加载时不使用日期筛选
+              undefined, // 初始加载时不使用日期筛选
+              1, // page
+              pageSize,
+              false, // createdAtToday
+              hasTransferFilter // hasTransferFilter
+            ),
           fetchLogisticsStatistics(
-            dateFrom && dateFrom.trim() ? dateFrom : undefined,
-            dateTo && dateTo.trim() ? dateTo : undefined
+            undefined, // 初始加载时不使用日期筛选
+            undefined // 初始加载时不使用日期筛选
           )
         ])
 
@@ -236,7 +238,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
 
     loadInitialData()
-  }, [statusFilter, dateFrom, dateTo])
+  }, [statusFilter, hasTransferFilter]) // 移除 dateFrom 和 dateTo 作为依赖，避免日期变化时自动搜索
 
   // 解析多个发货单号（支持多种分隔符）
   const parseSearchNumbers = (input: string): string[] => {
@@ -254,44 +256,12 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
   // 搜索功能（支持多个单号）
   const handleSearch = async () => {
-    if (!searchQuery.trim()) {
-      // 如果没有输入，直接加载所有数据
-      startTransition(() => {
-        loadLogisticsData(undefined, statusFilter, 1)
-      })
-      return
-    }
-
-    const searchNumbers = parseSearchNumbers(searchQuery)
-    
-    if (searchNumbers.length === 1) {
-      // 单个单号，直接搜索
-      startTransition(() => {
-        loadLogisticsData(searchNumbers[0], statusFilter, 1)
-      })
-    } else {
-      // 多个单号，先批量查询，然后显示结果
-      const result = await batchSearchLogistics(searchNumbers)
-      if (result.success) {
-        setSearchResult({
-          total: searchNumbers.length,
-          found: result.found.length,
-          notFound: result.notFound,
-        })
-        setSearchDialogOpen(true)
-        
-        // 使用找到的单号进行查询
-        if (result.found.length > 0) {
-          startTransition(() => {
-            loadLogisticsData(result.found.join(','), statusFilter, 1)
-          })
-        } else {
-          setLogisticsData([])
-          setTotalRecords(0)
-          setTotalPages(0)
-        }
-      }
-    }
+    startTransition(() => {
+      // 无论是否有搜索词，都使用当前的日期筛选条件
+      loadLogisticsData(searchQuery.trim() || undefined, statusFilter, 1)
+      // 同时加载统计数据，确保统计数据也应用日期筛选
+      loadStatistics()
+    })
   }
 
   // 清空搜索
@@ -305,14 +275,27 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 处理卡片点击筛选
   const handleCardClick = (filterType: 'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | 'has_transfer' | null) => {
     // 如果点击的是当前已选中的卡片，则取消筛选
-    if (statusFilter === filterType) {
-      setStatusFilter(null)
-    } else {
-      setStatusFilter(filterType)
-    }
-    // 筛选条件改变时会触发 useEffect 重新加载，不需要手动调用
+    const newStatusFilter = statusFilter === filterType ? null : filterType
+    setStatusFilter(newStatusFilter)
+    
+    // 手动调用加载数据，确保应用所有筛选条件（包括日期筛选）
+    startTransition(() => {
+      loadLogisticsData(searchQuery.trim() || undefined, newStatusFilter, 1)
+      loadStatistics()
+    })
   }
 
+  // 处理转单卡片点击（可以与其他状态筛选组合）
+  const handleTransferCardClick = () => {
+    const newHasTransferFilter = !hasTransferFilter
+    setHasTransferFilter(newHasTransferFilter)
+    
+    // 手动调用加载数据，确保应用所有筛选条件（包括日期筛选）
+    startTransition(() => {
+      loadLogisticsData(searchQuery.trim() || undefined, statusFilter, 1)
+      loadStatistics()
+    })
+  }
   // 重置所有筛选
   const handleResetFilters = () => {
     setStatusFilter(null)
