@@ -112,3 +112,4 @@ export function getStoresByOperator(operator: string): string[] {
   return stores.sort()
 }
 
+

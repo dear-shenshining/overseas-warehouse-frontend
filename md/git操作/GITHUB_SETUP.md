@@ -128,7 +128,7 @@ git status
 git add .
 
 # 3. 提交修改（写清楚修改内容）
-git commit -m "整个二级缓存"
+git commit -m "修改词语，异常毛利率"
 
 # 4. 推送到 GitHub
 git push

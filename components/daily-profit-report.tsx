@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useMemo, useRef, useEffect } from "react"
-import { TrendingUp, TrendingDown, DollarSign, Package, Upload, RefreshCw, ShoppingCart } from "lucide-react"
+import { TrendingUp, TrendingDown, DollarSign, Package, Upload, RefreshCw, ShoppingCart, Download } from "lucide-react"
+import * as XLSX from "xlsx"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
-import { importOrdersFile, fetchOrdersStatistics, fetchStoreList, fetchOperatorList, recalculateProfit, fetchOrdersList, updateOperatorsForExistingOrders } from "@/app/actions/orders"
+import { importOrdersFile, fetchOrdersStatistics, fetchStoreList, recalculateProfit, fetchOrdersList, updateOperatorsForExistingOrders } from "@/app/actions/orders"
 import {
   Select,
   SelectContent,
@@ -68,7 +69,6 @@ export default function DailyProfitReport() {
     return format(new Date(), "yyyy-MM-dd")
   })
   const [selectedStore, setSelectedStore] = useState<string>("all")
-  const [selectedOperator, setSelectedOperator] = useState<string>("all")
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [orderDetails, setOrderDetails] = useState<OrderDetail[]>([])
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -88,9 +88,8 @@ export default function DailyProfitReport() {
   } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   
-  // 店铺列表、运营人员列表和统计数据
+  // 店铺列表和统计数据
   const [storeList, setStoreList] = useState<string[]>([])
-  const [operatorList, setOperatorList] = useState<string[]>([])
   const [dailyData, setDailyData] = useState<DailyData[]>([])
   const [stats, setStats] = useState({
     totalAmount: 0,
@@ -104,22 +103,22 @@ export default function DailyProfitReport() {
     shippingPercentage: "0.0",
   })
 
-  // 加载店铺列表和运营人员列表
+  // 加载店铺列表
   useEffect(() => {
     const loadLists = async () => {
       const storeResult = await fetchStoreList()
       if (storeResult.success) {
         setStoreList(storeResult.data)
       }
-      const operatorResult = await fetchOperatorList()
-      if (operatorResult.success) {
-        setOperatorList(operatorResult.data)
-      }
     }
     loadLists()
   }, [])
 
-  // 加载统计数据
+  // 加载统计数据（包括统计卡片和图表数据）
+  // 当日期、店铺筛选变化时，会自动重新加载
+  // 这个 useEffect 负责更新：
+  // 1. 所有统计卡片的数据（结算总金额、总毛利、总毛利率、总运费、总订单、毛利率低、无运费补贴）
+  // 2. 利润与运费趋势图表的数据（dailyData）
   useEffect(() => {
     const loadData = async () => {
       setLoading(true)
@@ -127,8 +126,7 @@ export default function DailyProfitReport() {
         const result = await fetchOrdersStatistics(
           dateFrom,
           dateTo,
-          selectedStore === "all" ? undefined : selectedStore,
-          selectedOperator === "all" ? undefined : selectedOperator
+          selectedStore === "all" ? undefined : selectedStore
         )
         
         if (result.success && result.data) {
@@ -167,10 +165,12 @@ export default function DailyProfitReport() {
       }
     }
     loadData()
-  }, [dateFrom, dateTo, selectedStore, selectedOperator])
+  }, [dateFrom, dateTo, selectedStore])
 
-  // 当筛选条件变化时，如果当前显示的是表格，重新加载数据
+  // 当筛选条件变化时，如果当前显示的是表格，重新加载订单列表数据
+  // 参考 daily-profit-anomaly.tsx 的逻辑：当筛选条件变化时，自动更新所有相关数据
   useEffect(() => {
+    // 只有当显示表格选项卡时才加载订单列表
     if (activeTab === 'lowProfitRate' || activeTab === 'noShippingRefund') {
       setCurrentPage(1)
       const loadOrders = async () => {
@@ -180,7 +180,7 @@ export default function DailyProfitReport() {
             dateFrom,
             dateTo,
             selectedStore === "all" ? undefined : selectedStore,
-            selectedOperator === "all" ? undefined : selectedOperator,
+            undefined, // operator参数已移除
             activeTab
           )
           if (result.success) {
@@ -197,41 +197,21 @@ export default function DailyProfitReport() {
         }
       }
       loadOrders()
-    }
-  }, [dateFrom, dateTo, selectedStore, selectedOperator, activeTab])
-
-  // 处理选项卡点击
-  const handleTabClick = async (tab: 'profit' | 'shipping' | 'orders' | 'lowProfitRate' | 'noShippingRefund' | null) => {
-    setActiveTab(tab)
-    setCurrentPage(1) // 切换选项卡时重置到第一页
-    
-    // 如果点击的是需要显示表格的选项卡，加载订单数据
-    if (tab === 'lowProfitRate' || tab === 'noShippingRefund') {
-      setLoadingOrders(true)
-      try {
-        const result = await fetchOrdersList(
-          dateFrom,
-          dateTo,
-          selectedStore === "all" ? undefined : selectedStore,
-          selectedOperator === "all" ? undefined : selectedOperator,
-          tab
-        )
-        if (result.success) {
-          setFilteredOrders(result.data)
-        } else {
-          console.error('获取订单列表失败:', result.error)
-          setFilteredOrders([])
-        }
-      } catch (error) {
-        console.error('加载订单列表失败:', error)
-        setFilteredOrders([])
-      } finally {
-        setLoadingOrders(false)
-      }
     } else {
-      // 其他选项卡显示图表，清空订单列表
+      // 如果当前显示的是图表选项卡，清空订单列表
+      // 图表数据由第一个 useEffect 负责更新，当筛选条件变化时会自动重新加载
       setFilteredOrders([])
     }
+  }, [dateFrom, dateTo, selectedStore, activeTab])
+
+  // 处理选项卡点击
+  // 参考 daily-profit-anomaly.tsx 的逻辑：只更新状态，数据加载由 useEffect 自动处理
+  // 这样可以确保筛选条件变化时，数据也能正确更新
+  const handleTabClick = (tab: 'profit' | 'shipping' | 'orders' | 'lowProfitRate' | 'noShippingRefund' | null) => {
+    setActiveTab(tab)
+    setCurrentPage(1) // 切换选项卡时重置到第一页
+    // 注意：不需要在这里手动加载数据，因为 useEffect 会在 activeTab 变化时自动触发
+    // 这样可以确保数据加载逻辑统一，并且筛选条件变化时也能正确更新
   }
 
   // 计算分页数据
@@ -267,15 +247,166 @@ export default function DailyProfitReport() {
     }
   }
 
+  // 导出Excel功能 - 导出当前筛选条件下的所有订单数据
+  const handleExport = async () => {
+    try {
+      // 显示加载提示
+      console.log("正在准备导出数据，请稍候...")
+      
+      // 获取当前筛选条件下的所有订单数据（不限制类型，获取所有订单）
+      const result = await fetchOrdersList(
+        dateFrom,
+        dateTo,
+        selectedStore === "all" ? undefined : selectedStore,
+        undefined, // operator参数已移除
+        undefined // 不筛选类型，获取所有订单
+      )
+
+      if (!result.success) {
+        alert(`导出失败：${result.error || "未知错误"}`)
+        return
+      }
+
+      if (!result.data || result.data.length === 0) {
+        alert("没有数据可导出")
+        return
+      }
+
+      const wb = XLSX.utils.book_new()
+      
+      // 1. 导出统计数据
+      const statsData = [
+        ['统计项目', '数值'],
+        ['结算总金额', `¥${stats.totalAmount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+        ['总毛利（金额）', `¥${stats.totalProfit.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+        ['总毛利率', `${stats.totalProfitRate.toFixed(2)}%`],
+        ['总运费（金额）', `¥${stats.totalShipping.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+        ['运费占比', `${stats.totalAmount > 0 ? ((stats.totalShipping / stats.totalAmount) * 100).toFixed(2) : '0.00'}%`],
+        ['总订单（数量）', stats.totalOrders],
+        ['毛利率低（数量）', stats.lowProfitRateCount],
+        ['无运费补贴（数量）', stats.noShippingRefundCount],
+        ['统计日期范围', `${dateFrom} 至 ${dateTo}`],
+        ['店铺筛选', selectedStore === "all" ? "全部店铺" : selectedStore],
+      ]
+      const statsWs = XLSX.utils.aoa_to_sheet(statsData)
+      statsWs['!cols'] = [{ wch: 20 }, { wch: 25 }]
+      XLSX.utils.book_append_sheet(wb, statsWs, "统计数据")
+
+      // 2. 导出每日趋势数据
+      if (dailyData.length > 0) {
+        const trendData = dailyData.map(item => ({
+          '日期': item.date,
+          '利润（元）': item.profit,
+          '运费（元）': item.shipping,
+        }))
+        const trendWs = XLSX.utils.json_to_sheet(trendData)
+        trendWs['!cols'] = [{ wch: 12 }, { wch: 15 }, { wch: 15 }]
+        XLSX.utils.book_append_sheet(wb, trendWs, "每日趋势")
+      }
+
+      // 3. 导出所有订单数据
+      const orderData = result.data.map((order: any) => {
+        // 格式化付款时间
+        let paymentDate = ''
+        if (order.payment_time) {
+          if (typeof order.payment_time === 'string') {
+            const dateMatch = order.payment_time.match(/^(\d{4}-\d{2}-\d{2})/)
+            paymentDate = dateMatch ? dateMatch[1] : order.payment_time.split('T')[0].split(' ')[0]
+          } else {
+            const dateObj = new Date(order.payment_time)
+            paymentDate = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`
+          }
+        }
+
+        return {
+          '单号': order.order_number || '',
+          '店铺名': order.store_name || '',
+          '付款时间': paymentDate || '',
+          'SKU': order.platform_sku || '',
+          '物流渠道': order.logistics_channel || '',
+          '商品总成本': order.total_product_cost || 0,
+          '实际运费': order.actual_shipping_fee || 0,
+          '销售回款': order.sales_refund || 0,
+          '运费回款': order.shipping_refund || 0,
+          '结算总金额': order.total_amount || 0,
+          '毛利': order.profit || 0,
+          '利润率': (() => {
+            // 如果数据库中有 profit_rate，使用数据库的值；否则根据 毛利/结算总金额 计算
+            const profitRate = order.profit_rate !== null && order.profit_rate !== undefined
+              ? Number(order.profit_rate)
+              : (order.total_amount && order.total_amount > 0 
+                  ? (order.profit || 0) / order.total_amount * 100 
+                  : null)
+            return profitRate !== null ? `${profitRate.toFixed(2)}%` : ''
+          })(),
+        }
+      })
+      const orderWs = XLSX.utils.json_to_sheet(orderData)
+      // 设置列宽
+      orderWs['!cols'] = [
+        { wch: 20 }, // 单号
+        { wch: 15 }, // 店铺名
+        { wch: 12 }, // 付款时间
+        { wch: 20 }, // SKU
+        { wch: 15 }, // 物流渠道
+        { wch: 12 }, // 商品总成本
+        { wch: 12 }, // 实际运费
+        { wch: 12 }, // 销售回款
+        { wch: 12 }, // 运费回款
+        { wch: 12 }, // 结算总金额
+        { wch: 12 }, // 毛利
+        { wch: 10 }, // 利润率
+      ]
+      XLSX.utils.book_append_sheet(wb, orderWs, "订单明细")
+
+      // 生成文件名
+      const today = format(new Date(), "yyyyMMdd")
+      const storeName = selectedStore === "all" ? "全部店铺" : selectedStore
+      const fileName = `每日发货毛利分析_${storeName}_${dateFrom}_${dateTo}_${today}.xlsx`
+
+      // 导出文件
+      XLSX.writeFile(wb, fileName)
+      
+      console.log(`✅ 成功导出 ${result.data.length} 条订单数据`)
+    } catch (error: any) {
+      console.error("导出数据失败:", error)
+      alert(`导出数据失败: ${error.message || "未知错误"}`)
+    }
+  }
+
   // 处理图表点击事件
   const handleChartClick = async (dateLabel: string) => {
     const clickedDate = dailyData.find(item => item.dateLabel === dateLabel)
     if (clickedDate) {
       setSelectedDate(clickedDate.date)
-      // TODO: 加载该日期的真实订单详情
-      // 暂时使用空数组，后续可以实现
-      setOrderDetails([])
       setIsDialogOpen(true)
+      // 加载该日期的真实订单详情
+      try {
+        const result = await fetchOrdersList(
+          clickedDate.date,
+          clickedDate.date,
+          selectedStore === "all" ? undefined : selectedStore,
+          undefined, // operator参数已移除
+          undefined // 不筛选类型，获取所有订单
+        )
+        if (result.success) {
+          // 转换为订单详情格式
+          const details: OrderDetail[] = result.data.map((order: any) => ({
+            id: order.order_number || '',
+            orderNo: order.order_number || '',
+            amount: order.total_amount || 0,
+            profit: order.profit || 0,
+            shipping: order.shipping_refund || 0,
+          }))
+          setOrderDetails(details)
+        } else {
+          console.error('获取订单详情失败:', result.error)
+          setOrderDetails([])
+        }
+      } catch (error) {
+        console.error('加载订单详情失败:', error)
+        setOrderDetails([])
+      }
     }
   }
 
@@ -392,8 +523,7 @@ export default function DailyProfitReport() {
         const statsResult = await fetchOrdersStatistics(
           dateFrom,
           dateTo,
-          selectedStore === "all" ? undefined : selectedStore,
-          selectedOperator === "all" ? undefined : selectedOperator
+          selectedStore === "all" ? undefined : selectedStore
         )
         
         if (statsResult.success && statsResult.data) {
@@ -548,25 +678,22 @@ export default function DailyProfitReport() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={selectedOperator} onValueChange={setSelectedOperator}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="选择运营" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部运营</SelectItem>
-              {operatorList.map((operator) => (
-                <SelectItem key={operator} value={operator}>
-                  {operator}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           <DateRangePicker
             dateFrom={dateFrom}
             dateTo={dateTo}
             onDateChange={handleDateChange}
             className="w-[280px]"
           />
+          {/* 导出Excel */}
+          <Button 
+            variant="outline" 
+            className="gap-2" 
+            onClick={handleExport}
+            disabled={loading}
+          >
+            <Download className="h-4 w-4" />
+            导出Excel
+          </Button>
           {/* 更新运营字段 */}
           <Button 
             variant="outline" 
@@ -659,8 +786,8 @@ export default function DailyProfitReport() {
             </div>
             <div className="text-sm text-muted-foreground">
               筛选条件下的总金额
-            </div>
-          </Card>
+          </div>
+        </Card>
 
           {/* 总毛利 */}
           <Card 
@@ -716,8 +843,10 @@ export default function DailyProfitReport() {
             </div>
           </div>
             <div className="text-sm text-muted-foreground">
-              总运费金额
+              运费占比：{stats.totalAmount > 0 ? ((stats.totalShipping / stats.totalAmount) * 100).toFixed(2) : '0.00'}%
+            （总运费/结算总金额）
           </div>
+          
         </Card>
 
           {/* 总订单 */}

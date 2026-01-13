@@ -241,7 +241,7 @@ export default function LogisticsPage() {
                   >
                     <History className="h-4 w-4" />
                     <span>每日发货毛利异常</span>
-                  </button>
+            </button>
                 </div>
               )}
             </div>

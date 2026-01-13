@@ -19,7 +19,7 @@ export interface OrderRecord {
   actual_shipping_fee?: number
   product_and_shipping_cost?: number // 商品及运费成本（商品总成本 + 实际运费）
   profit?: number // 毛利（总计金额 - 商品及运费成本）
-  profit_rate?: number // 利润率（毛利 / 商品及运费成本 * 100%）
+  profit_rate?: number // 利润率（毛利 / 结算总金额 * 100%）
   sales_refund?: number
   shipping_refund?: number
   total_amount?: number
@@ -52,10 +52,13 @@ async function checkOperatorFieldExists(client?: PoolClient): Promise<boolean> {
       FROM information_schema.columns 
       WHERE table_name = 'orders' AND column_name = 'operator'
     `
-    const result = client 
-      ? await client.query(checkSql)
-      : await query<{ column_name: string }>(checkSql)
-    return result.length > 0
+    if (client) {
+      const result = await client.query(checkSql)
+      return result.rows.length > 0
+    } else {
+      const result = await query<{ column_name: string }>(checkSql)
+      return result.length > 0
+    }
   } catch (error) {
     console.warn('检查operator字段失败:', error)
     return false
@@ -184,15 +187,16 @@ export async function importOrdersData(
         // 计算毛利 = 总计金额 - 商品及运费成本
         const profit = toNumeric(totalAmount - productAndShippingCost)
         
-        // 计算利润率 = (毛利 / 商品及运费成本) * 100%
+        // 计算利润率 = (毛利 / 结算总金额) * 100%
         // 利润率也应该是 NUMERIC(10, 2) 格式
-        const profitRate = productAndShippingCost > 0 
-          ? toNumeric((profit / productAndShippingCost) * 100)
+        const profitRate = totalAmount > 0 
+          ? toNumeric((profit / totalAmount) * 100)
           : 0
 
         // 根据店铺名称自动匹配运营人员
+        // 优先使用订单中已有的operator，如果没有则根据店铺名称自动匹配
         const operator = order.operator || (order.store_name ? getOperatorByStoreName(order.store_name) : null)
-        
+
         const rowPlaceholders: string[] = []
         const fieldCount = hasOperatorField ? 15 : 14 // 如果有operator字段，则15个字段
         for (let i = 0; i < fieldCount; i++) {
@@ -207,8 +211,9 @@ export async function importOrdersData(
         ]
         
         // 如果有operator字段，添加运营人员
+        // 确保在导入时，如果operator为空，根据store_name自动填充
         if (hasOperatorField) {
-          rowValues.push(operator) // 在store_name之后添加operator
+          rowValues.push(operator) // 在store_name之后添加operator，确保自动填充
         }
         
         // 添加其他字段
@@ -238,7 +243,7 @@ export async function importOrdersData(
       
       const updateFields = hasOperatorField
         ? `store_name = EXCLUDED.store_name,
-          operator = EXCLUDED.operator,
+          operator = COALESCE(NULLIF(EXCLUDED.operator, ''), orders.operator),
           payment_time = EXCLUDED.payment_time,
           platform_sku = EXCLUDED.platform_sku,
           logistics_channel = EXCLUDED.logistics_channel,
@@ -471,7 +476,6 @@ export async function getOrdersStatistics(
     // 运营筛选
     if (operator && operator !== 'all') {
       // 检查operator字段是否存在
-      const { checkOperatorFieldExists } = await import('@/lib/orders-data')
       const hasOperatorField = await checkOperatorFieldExists()
       if (hasOperatorField) {
         whereConditions.push(`operator = $${paramIndex}`)
@@ -494,7 +498,7 @@ export async function getOrdersStatistics(
     }
 
     const whereClause = whereConditions.join(' AND ')
-
+      
     // 使用SQL聚合查询直接在数据库层面计算统计数据，大幅提升性能
     const statsSql = `
       SELECT 
@@ -688,8 +692,9 @@ export async function updateOperatorsForExistingOrders(): Promise<{
 }
 
 /**
- * 批量重新计算profit字段（用于修复旧数据）
- * 如果profit为0或null，但total_amount不为0，则重新计算profit
+ * 批量重新计算profit字段和profit_rate字段（用于修复旧数据）
+ * 1. 如果profit为0或null，但total_amount不为0，则重新计算profit
+ * 2. 重新计算所有订单的profit_rate（使用新公式：毛利/结算总金额）
  */
 export async function recalculateProfit(): Promise<{
   success: boolean
@@ -697,9 +702,11 @@ export async function recalculateProfit(): Promise<{
   error?: string
 }> {
   try {
-    console.log('开始重新计算profit字段...')
+    console.log('开始重新计算profit字段和profit_rate字段...')
     
-    // 查询需要更新的订单（profit为0或null，但total_amount不为0）
+    // 查询所有需要更新的订单（包括需要重新计算profit和profit_rate的订单）
+    // 1. profit为0或null，但total_amount不为0的订单（需要重新计算profit）
+    // 2. 所有有total_amount的订单（需要重新计算profit_rate，因为公式已改为 毛利/结算总金额）
     const checkSql = `
       SELECT 
         order_number,
@@ -709,8 +716,7 @@ export async function recalculateProfit(): Promise<{
         product_and_shipping_cost,
         profit
       FROM orders
-      WHERE (profit IS NULL OR profit = 0)
-        AND total_amount IS NOT NULL
+      WHERE total_amount IS NOT NULL
         AND total_amount != 0
     `
     
@@ -760,9 +766,9 @@ export async function recalculateProfit(): Promise<{
         const totalAmount = toNumeric(order.total_amount)
         const profit = toNumeric(totalAmount - productAndShippingCost)
         
-        // 计算利润率
-        const profitRate = productAndShippingCost > 0 
-          ? toNumeric((profit / productAndShippingCost) * 100)
+        // 计算利润率 = (毛利 / 结算总金额) * 100%
+        const profitRate = order.total_amount > 0 
+          ? toNumeric((profit / order.total_amount) * 100)
           : 0
         
         // 更新订单

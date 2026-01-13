@@ -574,7 +574,7 @@ git status
 git add .
 
 # 3. 首次提交
-git commit -m "日毛利数据"
+git commit -m "修改密码权限"
 
 # 4. 创建 main 分支（如果还没有）
 git checkout -b main

@@ -438,6 +438,8 @@ export async function fetchOrdersList(
       profit: order.profit || 0,
       profit_rate: order.profit_rate !== null && order.profit_rate !== undefined ? order.profit_rate : undefined,
       shipping_refund: order.shipping_refund || 0,
+      total_amount: order.total_amount || 0,
+      sales_refund: order.sales_refund || 0, // 添加 sales_refund 字段
     }))
     
     return {
