@@ -182,16 +182,17 @@ function calculateInventoryData(
     if (salesNum === 0) {
       labels.push(2) // sales_num为0（无销量）
     }
-    if (salesNum > 300) {
+    const isHotProduct = salesNum > 300 // 判断是否为爆款
+    if (isHotProduct) {
       labels.push(3) // sales_num大于300（爆款）
     }
-    // 在售天数预警：如果有爆款标签（3），需要大于30天；否则大于15天
+    // 在售天数预警：
+    // - 爆款：超过25天预警
+    // - 普通商品：超过20天预警
     if (saleDay !== null) {
-      const hasHotProduct = salesNum > 300 // 是否有爆款标签
-      if (hasHotProduct && saleDay > 30) {
-        labels.push(4) // 有爆款且sale_day大于30（在售天数预警）
-      } else if (!hasHotProduct && saleDay > 15) {
-        labels.push(4) // 无爆款且sale_day大于15（在售天数预警）
+      const threshold = isHotProduct ? 25 : 20
+      if (saleDay > threshold) {
+        labels.push(4) // 在售天数预警
       }
     }
     if (inventoryNum < 0) {
@@ -330,12 +331,13 @@ export async function fetchInventoryData(searchSku?: string, labelFilter?: 'norm
 
 /**
  * 获取库存统计数据
+ * @param chargeFilter 负责人筛选（可选）
  * @returns 统计数据
  */
-export async function fetchInventoryStatistics() {
+export async function fetchInventoryStatistics(chargeFilter?: string) {
   try {
     const { getInventoryStatistics } = await import('@/lib/inventory-data')
-    const data = await getInventoryStatistics()
+    const data = await getInventoryStatistics(chargeFilter)
     return {
       success: true,
       data,
@@ -390,15 +392,15 @@ export async function refreshTaskTable() {
 /**
  * 获取任务数据（从 task 表）
  * @param searchSku 搜索SKU（可选）
- * @param labelFilter 标签筛选（可选）：'over_15_days'=在售天数超15天，'has_inventory_no_sales'=有库存无销量
- * @param statusFilter 状态筛选（可选）：'no_solution'=未选择方案，'in_progress'=任务正在进行中，'timeout'=超时任务
+ * @param labelFilter 标签筛选（可选）：'over_15_days'=在售天数超20天，'has_inventory_no_sales'=有库存无销量
+ * @param statusFilter 状态筛选（可选）：'no_solution'=未选择方案，'in_progress'=任务正在进行中，'checking'=完成检查，'reviewing'=审核中，'timeout'=超时任务
  * @param chargeFilter 负责人筛选（可选）
  * @returns 任务数据
  */
 export async function fetchTaskData(
   searchSku?: string,
   labelFilter?: 'over_15_days' | 'has_inventory_no_sales',
-  statusFilter?: 'no_solution' | 'in_progress' | 'timeout',
+  statusFilter?: 'no_solution' | 'in_progress' | 'checking' | 'reviewing' | 'timeout',
   chargeFilter?: string
 ) {
   try {
@@ -568,6 +570,143 @@ export async function fetchTaskHistoryChargeList() {
       success: false,
       error: error.message || '获取历史任务负责人列表失败',
       data: [],
+    }
+  }
+}
+
+/**
+ * 添加任务图片URL
+ * @param wareSku SKU货号
+ * @param imageUrl 图片URL
+ * @returns 更新结果
+ */
+export async function addTaskImageUrl(wareSku: string, imageUrl: string) {
+  try {
+    const { addTaskImageUrl: addImageUrl } = await import('@/lib/inventory-data')
+    const result = await addImageUrl(wareSku, imageUrl)
+    return result
+  } catch (error: any) {
+    console.error('添加任务图片URL失败:', error)
+    return {
+      success: false,
+      error: error.message || '添加图片URL失败',
+    }
+  }
+}
+
+/**
+ * 删除任务图片URL
+ * @param wareSku SKU货号
+ * @param imageUrl 要删除的图片URL
+ * @returns 更新结果
+ */
+export async function removeTaskImageUrl(wareSku: string, imageUrl: string) {
+  try {
+    const { removeTaskImageUrl: removeImageUrl } = await import('@/lib/inventory-data')
+    const result = await removeImageUrl(wareSku, imageUrl)
+    return result
+  } catch (error: any) {
+    console.error('删除任务图片URL失败:', error)
+    return {
+      success: false,
+      error: error.message || '删除图片URL失败',
+    }
+  }
+}
+
+/**
+ * 确认完成检查（从任务正在进行中转入完成检查）
+ * @param wareSku SKU货号
+ * @returns 更新结果
+ */
+export async function confirmTaskCheck(wareSku: string) {
+  try {
+    const { confirmTaskCheck: confirmCheck } = await import('@/lib/inventory-data')
+    const result = await confirmCheck(wareSku)
+    return result
+  } catch (error: any) {
+    console.error('确认完成检查失败:', error)
+    return {
+      success: false,
+      error: error.message || '确认完成检查失败',
+    }
+  }
+}
+
+/**
+ * 确认审核（从完成检查转入审核中）
+ * @param wareSku SKU货号
+ * @returns 更新结果
+ */
+export async function confirmTaskReview(wareSku: string) {
+  try {
+    const { confirmTaskReview: confirmReview } = await import('@/lib/inventory-data')
+    const result = await confirmReview(wareSku)
+    return result
+  } catch (error: any) {
+    console.error('确认审核失败:', error)
+    return {
+      success: false,
+      error: error.message || '确认审核失败',
+    }
+  }
+}
+
+/**
+ * 审核通过（从审核中转入历史任务）
+ * @param wareSku SKU货号
+ * @returns 更新结果
+ */
+export async function approveTask(wareSku: string) {
+  try {
+    // 检查管理员权限
+    const { checkAuth } = await import('@/app/actions/auth')
+    const auth = await checkAuth()
+    if (!auth.isAuthenticated || !auth.isAdmin) {
+      return {
+        success: false,
+        error: '需要管理员权限',
+      }
+    }
+
+    const { approveTask: approve } = await import('@/lib/inventory-data')
+    const result = await approve(wareSku)
+    return result
+  } catch (error: any) {
+    console.error('审核通过失败:', error)
+    return {
+      success: false,
+      error: error.message || '审核通过失败',
+    }
+  }
+}
+
+/**
+ * 审核打回（从审核中打回完成检查）
+ * @param wareSku SKU货号
+ * @param rejectReason 打回理由
+ * @returns 更新结果
+ */
+export async function rejectTask(wareSku: string, rejectReason: string) {
+  try {
+    // 检查管理员权限
+    const { checkAuth } = await import('@/app/actions/auth')
+    const auth = await checkAuth()
+    if (!auth.isAuthenticated || !auth.isAdmin) {
+      return {
+        success: false,
+        error: '需要管理员权限',
+      }
+    }
+
+    const { rejectTask: reject } = await import('@/lib/inventory-data')
+    const result = await reject(wareSku, rejectReason)
+    return result
+  } catch (error: any) {
+    console.error('审核打回失败:', error)
+    return {
+      success: false,
+      error: error.message || '审核打回失败',
     }
   }
 }

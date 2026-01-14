@@ -17,10 +17,11 @@ export async function fetchLogisticsData(
   page: number = 1,
   pageSize: number = 50,
   createdAtToday?: boolean,
-  hasTransferFilter?: boolean
+  hasTransferFilter?: boolean,
+  updatedAtToday?: boolean
 ) {
   try {
-    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize, createdAtToday, hasTransferFilter)
+    const result = await getLogisticsData(searchNum, statusFilter, dateFrom, dateTo, page, pageSize, createdAtToday, hasTransferFilter, updatedAtToday)
     return {
       success: true,
       data: result.data,
@@ -83,6 +84,7 @@ export async function fetchLogisticsStatistics(dateFrom?: string, dateTo?: strin
         delivered: 0,
         total: 0,
         has_transfer: 0,
+        updated_today: 0,
       },
     }
   }
@@ -151,6 +153,7 @@ export async function updateLogisticsStatus(
     dateTo?: string
     searchNums?: string[]
     hasTransferFilter?: boolean
+    updatedAtToday?: boolean
   }
 ) {
   try {

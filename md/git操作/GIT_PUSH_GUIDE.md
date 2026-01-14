@@ -555,7 +555,7 @@ git branch
 git add .
 
 # 4. 提交更改
-git commit -m "修复HTML解析逻辑：使用cheerio精确解析日邮追踪信息表格"
+git commit -m "去掉运营筛选"
 
 # 5. 查看提交历史（可选）
 git log --oneline -3
@@ -574,7 +574,7 @@ git status
 git add .
 
 # 3. 首次提交
-git commit -m "修改密码权限"
+git commit -m "把比例数据做到展示框里面"
 
 # 4. 创建 main 分支（如果还没有）
 git checkout -b main

@@ -50,7 +50,10 @@ export interface InventoryRecord {
   charge?: string
   label?: number[] | string // 标签列表，存储为数组或JSON字符串
   promised_land?: number // 方案选择：0=未选择，1=退回厂家，2=降价清仓，3=打处理
+  promised_land_snapshot?: number // 方案快照（转入完成检查时保存）
+  task_status?: number // 任务状态：0=未选择方案，1/2/3=任务正在进行中，4=完成检查，5=审核中
   count_down?: number // 倒计时数字，默认值为1
+  image_urls?: string[] // 任务相关图片URL数组
   created_at?: string
   updated_at?: string
 }
@@ -153,17 +156,30 @@ export async function importInventoryData(
       const labelValue = processLabelField(record.label)
 
       // 检测任务完成：
-      // 非爆款：sale_day > 15 变为 sale_day <= 15
-      // 爆款：sale_day > 30 变为 sale_day <= 30
+      // 爆款：sale_day > 25 变为 sale_day <= 25
+      // 普通商品：sale_day > 20 变为 sale_day <= 20
       const oldSaleDay = existingTask.length > 0 ? existingTask[0].sale_day : null
       const newSaleDay = record.sale_day ?? null
       
       if (existingTask.length > 0 && oldSaleDay !== null && newSaleDay !== null) {
         const taskRecord = existingTask[0]
-        const isHotProduct = (taskRecord.sales_num ?? 0) > 300 // 爆款判断：sales_num > 300
+        
+        // 判断是否为爆款（label包含3）
+        let isHotProduct = false
+        try {
+          const taskLabel = taskRecord.label
+          if (taskLabel) {
+            const labels = typeof taskLabel === 'string' ? JSON.parse(taskLabel) : taskLabel
+            if (Array.isArray(labels) && labels.includes(3)) {
+              isHotProduct = true
+            }
+          }
+        } catch (e) {
+          // 解析失败，默认为普通商品
+        }
         
         // 根据是否为爆款使用不同的阈值
-        const threshold = isHotProduct ? 30 : 15
+        const threshold = isHotProduct ? 25 : 20
         const isTaskCompleted = oldSaleDay > threshold && newSaleDay <= threshold
         
         if (isTaskCompleted) {
@@ -267,14 +283,15 @@ export async function importInventoryData(
  * 根据 promised_land 的值使用不同的计算逻辑：
  * - promised_land = 0 时：count_down = 24 - (当前时间 - created_at的小时差)
  * - promised_land != 0 时：count_down = 168 - (当前时间 - created_at的小时差) (7天 = 168小时)
+ * 
+ * 同时处理超时任务：如果 count_down < 0，自动转入未选择方案，并在历史任务中留下记录
  */
 export async function updateTaskCountDown(): Promise<{ success: boolean; error?: string }> {
   const connection = await getConnection()
   await connection.query('BEGIN')
 
   try {
-    // 使用 SQL 的 CASE WHEN 根据 promised_land 的值选择不同的计算方式
-    // PostgreSQL: EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 计算小时差
+    // 1. 更新 count_down 字段
     await connection.query(
       `UPDATE task SET count_down = CASE 
         WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
@@ -282,6 +299,65 @@ export async function updateTaskCountDown(): Promise<{ success: boolean; error?:
       END
       WHERE created_at IS NOT NULL`
     )
+
+    // 2. 处理超时任务（count_down < 0）
+    // 获取所有超时的任务
+    const timeoutTasksResult = await connection.query(
+      `SELECT ware_sku, sale_day, charge, promised_land, promised_land_snapshot,
+              task_status, inventory_num, sales_num, label
+       FROM task
+       WHERE (CASE 
+         WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
+         ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
+       END) < 0
+       AND task_status IN (1, 2, 3, 4, 5)`
+    )
+    
+    const timeoutTasks = timeoutTasksResult.rows
+    
+    // 3. 将超时任务保存到历史表
+    for (const task of timeoutTasks) {
+      const taskLabelValue = processLabelField(task.label)
+      
+      // 插入历史任务记录
+      await connection.query(
+        `INSERT INTO task_history (
+          ware_sku, completed_sale_day, charge, promised_land,
+          inventory_num, sales_num, label, completed_at,
+          task_status_snapshot, review_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, 'timeout')`,
+        [
+          task.ware_sku,
+          task.sale_day ?? null,
+          task.charge ?? null,
+          task.promised_land_snapshot ?? task.promised_land ?? 0,
+          task.inventory_num ?? 0,
+          task.sales_num ?? 0,
+          taskLabelValue,
+          task.task_status ?? 0,
+        ]
+      )
+    }
+    
+    // 4. 重置超时任务为未选择方案状态
+    if (timeoutTasks.length > 0) {
+      const timeoutSkus = timeoutTasks.map((t: any) => t.ware_sku)
+      const placeholders = timeoutSkus.map((_, index) => `$${index + 1}`).join(',')
+      
+      await connection.query(
+        `UPDATE task SET
+          promised_land = 0,
+          task_status = 0,
+          promised_land_snapshot = NULL,
+          checked_at = NULL,
+          reviewed_at = NULL,
+          review_status = NULL,
+          reject_reason = NULL,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE ware_sku IN (${placeholders})`,
+        timeoutSkus
+      )
+    }
 
     await connection.query('COMMIT')
     return { success: true }
@@ -308,14 +384,11 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
   await connection.query('BEGIN')
 
   try {
-    // 1. 先清空 task 表
-    await connection.query('DELETE FROM task')
-
-    // 2. 从 inventory 表查询符合条件的记录
+    // 1. 从 inventory 表查询符合条件的记录
     // 条件：label 包含 4（在售天数预警）或者 (label 包含 2 但不包含 1 且不包含 5)（有库存无销量）
     // PostgreSQL: 使用 JSONB @> 操作符
     const sql = `
-      SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, created_at, updated_at
+      SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label
       FROM inventory
       WHERE (label::jsonb @> '[4]'::jsonb)
          OR ((label::jsonb @> '[2]'::jsonb)
@@ -324,38 +397,119 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
     `
     
     const result = await connection.query(sql)
-    const results = result.rows
+    const inventoryRecords = result.rows
 
-    // 3. 将查询结果插入到 task 表
-    for (const record of results) {
-      // 处理 label 字段：使用统一函数处理
+    // 2. 获取所有现有任务（用于检查是否存在和状态）
+    const existingTasksResult = await connection.query(
+      'SELECT ware_sku, task_status, promised_land, promised_land_snapshot, created_at FROM task'
+    )
+    const existingTasksMap = new Map(
+      existingTasksResult.rows.map((row: any) => [row.ware_sku, row])
+    )
+
+    // 3. 处理每个符合条件的 inventory 记录
+    const validSkus: string[] = []
+    
+    for (const record of inventoryRecords) {
+      validSkus.push(record.ware_sku)
       const labelValue = processLabelField(record.label)
+      const existingTask = existingTasksMap.get(record.ware_sku)
 
-      // PostgreSQL: 使用 ON CONFLICT 来处理唯一键冲突
-      // count_down 会在查询时通过日期差计算，这里不需要设置
-      // 新插入时：created_at 使用当前时间（移动到任务表的时间）
-      // 更新时：保持原有的 created_at 不变（不在 UPDATE SET 中更新 created_at）
+      if (existingTask) {
+        // 任务已存在，需要更新
+        const taskStatus = existingTask.task_status ?? 0
+        const promisedLandSnapshot = existingTask.promised_land_snapshot
+        const originalPromisedLand = existingTask.promised_land ?? 0
+
+        // 情况1：任务在完成检查（task_status=4）或审核中（task_status=5）
+        if (taskStatus === 4 || taskStatus === 5) {
+          // 流回任务正在进行中
+          // 重置状态：task_status = promised_land_snapshot 或 promised_land
+          const newTaskStatus = promisedLandSnapshot ?? originalPromisedLand ?? 0
+          
+          await connection.query(
+            `UPDATE task SET
+              inventory_num = $1,
+              sales_num = $2,
+              sale_day = $3,
+              charge = $4,
+              label = $5,
+              task_status = $6,
+              promised_land = $7,
+              promised_land_snapshot = NULL,
+              checked_at = NULL,
+              reviewed_at = NULL,
+              review_status = NULL,
+              reject_reason = NULL,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE ware_sku = $8`,
+            [
+              record.inventory_num,
+              record.sales_num,
+              record.sale_day ?? null,
+              record.charge ?? null,
+              labelValue,
+              newTaskStatus,
+              newTaskStatus, // promised_land 也同步更新
+              record.ware_sku,
+            ]
+          )
+          // 注意：created_at 保持不变，倒计时继续计算
+        } else {
+          // 情况2：任务在未选择方案（task_status=0）或任务正在进行中（task_status=1/2/3）
+          // 正常更新数据字段，保持 created_at 和状态字段不变
+          await connection.query(
+            `UPDATE task SET
+              inventory_num = $1,
+              sales_num = $2,
+              sale_day = $3,
+              charge = $4,
+              label = $5,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE ware_sku = $6`,
+            [
+              record.inventory_num,
+              record.sales_num,
+              record.sale_day ?? null,
+              record.charge ?? null,
+              labelValue,
+              record.ware_sku,
+            ]
+          )
+          // 注意：created_at、task_status、promised_land 等保持不变
+        }
+      } else {
+        // 任务不存在，插入新任务
+        await connection.query(
+          `INSERT INTO task (
+            ware_sku, inventory_num, sales_num, sale_day, charge, label, 
+            promised_land, task_status, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          [
+            record.ware_sku,
+            record.inventory_num,
+            record.sales_num,
+            record.sale_day ?? null,
+            record.charge ?? null,
+            labelValue,
+            0, // promised_land 默认为 0（未选择方案）
+            0, // task_status 默认为 0（未选择方案）
+          ]
+        )
+      }
+    }
+
+    // 4. 删除不再符合条件的任务
+    if (validSkus.length > 0) {
+      // 使用参数化查询，避免 SQL 注入
+      const placeholders = validSkus.map((_, index) => `$${index + 1}`).join(',')
       await connection.query(
-        `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-         ON CONFLICT (ware_sku) DO UPDATE SET
-         inventory_num = EXCLUDED.inventory_num,
-         sales_num = EXCLUDED.sales_num,
-         sale_day = EXCLUDED.sale_day,
-         charge = EXCLUDED.charge,
-         label = EXCLUDED.label,
-         promised_land = EXCLUDED.promised_land,
-         updated_at = CURRENT_TIMESTAMP`,
-        [
-          record.ware_sku,
-          record.inventory_num,
-          record.sales_num,
-          record.sale_day ?? null,
-          record.charge ?? null,
-          labelValue,
-          record.promised_land ?? 0, // Default to 0 if null/undefined
-        ]
+        `DELETE FROM task WHERE ware_sku NOT IN (${placeholders})`,
+        validSkus
       )
+    } else {
+      // 如果没有符合条件的记录，删除所有任务
+      await connection.query('DELETE FROM task')
     }
 
     await connection.query('COMMIT')
@@ -366,13 +520,21 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
     
     // 如果 JSON 函数不支持，使用备用方法
     try {
-      // 重新开始事务
       await connection.query('BEGIN')
-      await connection.query('DELETE FROM task')
       
       // 获取所有 inventory 记录，在前端筛选
       const allResult = await connection.query('SELECT * FROM inventory')
       const allRecords = allResult.rows
+      
+      // 获取所有现有任务
+      const existingTasksResult = await connection.query(
+        'SELECT ware_sku, task_status, promised_land, promised_land_snapshot FROM task'
+      )
+      const existingTasksMap = new Map(
+        existingTasksResult.rows.map((row: any) => [row.ware_sku, row])
+      )
+      
+      const validSkus: string[] = []
       
       for (const record of allRecords) {
         let labels: number[] = []
@@ -384,38 +546,71 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
           }
         }
         
-        // 检查 label 是否符合条件：
-        // - label 包含 4（在售天数预警）
-        // - 或者 label 包含 2 但不包含 1 且不包含 5（有库存无销量）
-        const isOver15Days = labels.includes(4)
+        // 检查 label 是否符合条件
+        const isOver20Days = labels.includes(4)
         const hasInventoryNoSales = labels.includes(2) && !labels.includes(1) && !labels.includes(5)
         
-        if (Array.isArray(labels) && (isOver15Days || hasInventoryNoSales)) {
-          // 处理 label 字段：使用统一函数处理
+        if (Array.isArray(labels) && (isOver20Days || hasInventoryNoSales)) {
+          validSkus.push(record.ware_sku)
           const labelValue = processLabelField(record.label)
-          
-          await connection.query(
-            `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-             ON CONFLICT (ware_sku) DO UPDATE SET
-             inventory_num = EXCLUDED.inventory_num,
-             sales_num = EXCLUDED.sales_num,
-             sale_day = EXCLUDED.sale_day,
-             charge = EXCLUDED.charge,
-             label = EXCLUDED.label,
-             promised_land = EXCLUDED.promised_land,
-             updated_at = CURRENT_TIMESTAMP`,
-            [
-              record.ware_sku,
-              record.inventory_num,
-              record.sales_num,
-              record.sale_day ?? null,
-              record.charge ?? null,
-              labelValue,
-              record.promised_land ?? 0,
-            ]
-          )
+          const existingTask = existingTasksMap.get(record.ware_sku)
+
+          if (existingTask) {
+            const taskStatus = existingTask.task_status ?? 0
+            const promisedLandSnapshot = existingTask.promised_land_snapshot
+            const originalPromisedLand = existingTask.promised_land ?? 0
+
+            if (taskStatus === 4 || taskStatus === 5) {
+              // 流回任务正在进行中
+              const newTaskStatus = promisedLandSnapshot ?? originalPromisedLand ?? 0
+              
+              await connection.query(
+                `UPDATE task SET
+                  inventory_num = $1, sales_num = $2, sale_day = $3, charge = $4, label = $5,
+                  task_status = $6, promised_land = $7,
+                  promised_land_snapshot = NULL, checked_at = NULL, reviewed_at = NULL,
+                  review_status = NULL, reject_reason = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE ware_sku = $8`,
+                [
+                  record.inventory_num, record.sales_num, record.sale_day ?? null,
+                  record.charge ?? null, labelValue, newTaskStatus, newTaskStatus,
+                  record.ware_sku,
+                ]
+              )
+            } else {
+              await connection.query(
+                `UPDATE task SET
+                  inventory_num = $1, sales_num = $2, sale_day = $3, charge = $4, label = $5,
+                  updated_at = CURRENT_TIMESTAMP
+                WHERE ware_sku = $6`,
+                [
+                  record.inventory_num, record.sales_num, record.sale_day ?? null,
+                  record.charge ?? null, labelValue, record.ware_sku,
+                ]
+              )
+            }
+          } else {
+            await connection.query(
+              `INSERT INTO task (ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, task_status, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+              [
+                record.ware_sku, record.inventory_num, record.sales_num,
+                record.sale_day ?? null, record.charge ?? null, labelValue, 0, 0,
+              ]
+            )
+          }
         }
+      }
+      
+      // 删除不再符合条件的任务
+      if (validSkus.length > 0) {
+        const placeholders = validSkus.map((_, index) => `$${index + 1}`).join(',')
+        await connection.query(
+          `DELETE FROM task WHERE ware_sku NOT IN (${placeholders})`,
+          validSkus
+        )
+      } else {
+        await connection.query('DELETE FROM task')
       }
       
       await connection.query('COMMIT')
@@ -435,38 +630,39 @@ export async function syncInventoryToTask(): Promise<{ success: boolean; error?:
 /**
  * 获取库存统计数据
  * 统计不同label的数量
+ * @param chargeFilter 负责人筛选（可选）
  * @returns 统计数据
  */
-export async function getInventoryStatistics(): Promise<{
+export async function getInventoryStatistics(chargeFilter?: string): Promise<{
   normal_sales: number // label不包含1、2、4、5的数量（正常销售）
   over_15_days: number // label包含4的数量（在售天数超15天）
   negative_inventory: number // label包含5的数量（库存待冲平）
   has_inventory_no_sales: number // label包含2但不包含1的数量（有库存无销量）
 }> {
   try {
+    // 构建负责人筛选条件
+    const chargeCondition = chargeFilter ? ` AND charge = $1` : ''
+    const params = chargeFilter ? [chargeFilter] : []
+
     // 统计label包含4的数量（在售天数超15天）
     // PostgreSQL: 使用 JSONB @> 操作符
-    const over15DaysResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[4]'::jsonb"
-    )
+    const over15DaysSql = `SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[4]'::jsonb${chargeCondition}`
+    const over15DaysResult = await query<{ count: string | number }>(over15DaysSql, params)
     const over_15_days = Number(over15DaysResult[0]?.count) || 0
 
     // 统计label包含5的数量（库存待冲平）
-    const negativeInventoryResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[5]'::jsonb"
-    )
+    const negativeInventorySql = `SELECT COUNT(*) as count FROM inventory WHERE label::jsonb @> '[5]'::jsonb${chargeCondition}`
+    const negativeInventoryResult = await query<{ count: string | number }>(negativeInventorySql, params)
     const negative_inventory = Number(negativeInventoryResult[0]?.count) || 0
 
     // 统计label包含2但不包含1且不包含5的数量（有库存无销量）
-    const hasInventoryNoSalesResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)"
-    )
+    const hasInventoryNoSalesSql = `SELECT COUNT(*) as count FROM inventory WHERE (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)${chargeCondition}`
+    const hasInventoryNoSalesResult = await query<{ count: string | number }>(hasInventoryNoSalesSql, params)
     const has_inventory_no_sales = Number(hasInventoryNoSalesResult[0]?.count) || 0
 
     // 统计label不包含1、2、4、5的数量（正常销售）
-    const normalSalesResult = await query<{ count: string | number }>(
-      "SELECT COUNT(*) as count FROM inventory WHERE (label IS NULL OR label::text = '[]' OR (NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[4]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)))"
-    )
+    const normalSalesSql = `SELECT COUNT(*) as count FROM inventory WHERE (label IS NULL OR label::text = '[]' OR (NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[4]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)))${chargeCondition}`
+    const normalSalesResult = await query<{ count: string | number }>(normalSalesSql, params)
     const normal_sales = Number(normalSalesResult[0]?.count) || 0
 
     return {
@@ -602,15 +798,15 @@ export async function getInventoryData(
 /**
  * 获取所有任务数据（从 task 表）
  * @param searchSku 搜索SKU（可选）
- * @param labelFilter 标签筛选（可选）：'over_15_days'=在售天数超15天，'has_inventory_no_sales'=有库存无销量
- * @param statusFilter 状态筛选（可选）：'no_solution'=未选择方案，'in_progress'=任务正在进行中，'timeout'=超时任务（count_down < 0）
+ * @param labelFilter 标签筛选（可选）：'over_15_days'=在售天数超20天，'has_inventory_no_sales'=有库存无销量
+ * @param statusFilter 状态筛选（可选）：'no_solution'=未选择方案，'in_progress'=任务正在进行中，'checking'=完成检查，'reviewing'=审核中，'timeout'=超时任务（count_down < 0）
  * @param chargeFilter 负责人筛选（可选）
  * @returns 任务数据数组
  */
 export async function getTaskData(
   searchSku?: string,
   labelFilter?: 'over_15_days' | 'has_inventory_no_sales',
-  statusFilter?: 'no_solution' | 'in_progress' | 'timeout',
+  statusFilter?: 'no_solution' | 'in_progress' | 'checking' | 'reviewing' | 'timeout',
   chargeFilter?: string
 ): Promise<InventoryRecord[]> {
   try {
@@ -619,7 +815,7 @@ export async function getTaskData(
     // 使用 CASE WHEN 根据 promised_land 的值计算 count_down（单位：小时）
     // PostgreSQL: EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 计算小时差
     let sql =
-      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, CASE WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END as count_down, created_at, updated_at FROM task WHERE 1=1'
+      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, promised_land_snapshot, task_status, image_urls, CASE WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END as count_down, created_at, updated_at FROM task WHERE 1=1'
     const params: any[] = []
     let paramIndex = 1
 
@@ -641,13 +837,20 @@ export async function getTaskData(
       sql += ` AND NOT (label::jsonb @> '[5]'::jsonb)`
     }
 
-    // 状态筛选（后三个）
+    // 状态筛选
     if (statusFilter === 'no_solution') {
-      // 未选择方案：promised_land = 0
-      sql += ' AND promised_land = 0'
+      // 未选择方案：task_status = 0
+      sql += ' AND task_status = 0'
     } else if (statusFilter === 'in_progress') {
-      // 任务正在进行中：promised_land = 1 或 2 或 3
-      sql += ' AND promised_land IN (1, 2, 3)'
+      // 任务正在进行中：task_status = 1 或 2 或 3
+      sql += ' AND task_status IN (1, 2, 3)'
+    } else if (statusFilter === 'checking') {
+      // 完成检查：task_status = 4
+      sql += ' AND task_status = 4'
+    } else if (statusFilter === 'reviewing') {
+      // 审核中：task_status = 5
+      // 注意：前端需要根据管理员权限控制是否显示此筛选
+      sql += ' AND task_status = 5'
     } else if (statusFilter === 'timeout') {
       // 超时任务：count_down < 0（单位：小时）
       sql += ' AND (CASE WHEN promised_land = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END) < 0'
@@ -664,7 +867,7 @@ export async function getTaskData(
 
     const results = await query<any>(sql, params)
 
-    // 将label字段从JSON字符串转换为数组，解析count_down字段
+    // 将label字段从JSON字符串转换为数组，解析count_down字段和image_urls字段
     const parsedResults = results.map((row: any) => {
       if (row.label) {
         try {
@@ -673,6 +876,22 @@ export async function getTaskData(
           // 如果解析失败，保持原值
           console.warn('解析label字段失败:', row.label)
         }
+      }
+      // 解析 image_urls 字段（JSONB数组）
+      if (row.image_urls) {
+        try {
+          row.image_urls = typeof row.image_urls === 'string' ? JSON.parse(row.image_urls) : row.image_urls
+          // 确保是数组
+          if (!Array.isArray(row.image_urls)) {
+            row.image_urls = []
+          }
+        } catch (e) {
+          // 如果解析失败，设为空数组
+          console.warn('解析image_urls字段失败:', row.image_urls)
+          row.image_urls = []
+        }
+      } else {
+        row.image_urls = []
       }
       // count_down 字段是 created_at 到现在的天数差（由 SQL DATEDIFF 计算）
       // 确保 count_down 有默认值 0（如果 created_at 为空）
@@ -718,11 +937,13 @@ export async function getTaskData(
  * @returns 统计数据
  */
 export async function getTaskStatistics(chargeFilter?: string): Promise<{
-  over_15_days: number // label包含4的数量（在售天数超15天）
+  over_15_days: number // label包含4的数量（在售天数超20天）
   has_inventory_no_sales: number // label包含2但不包含1且不包含5的数量（有库存无销量）
-  no_solution: number // promised_land = 0的数量（未选择方案）
-  in_progress: number // promised_land IN (1,2,3)的数量（任务正在进行中）
-  timeout: number // 全量数据（超时任务）
+  no_solution: number // task_status = 0的数量（未选择方案）
+  in_progress: number // task_status IN (1,2,3)的数量（任务正在进行中）
+  checking: number // task_status = 4的数量（完成检查）
+  reviewing: number // task_status = 5的数量（审核中）
+  timeout: number // 超时任务数量
 }> {
   try {
     // 统计label包含4的数量（在售天数超15天）
@@ -750,8 +971,8 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
     const hasInventoryNoSalesResult = await query<{ count: string | number }>(hasInventoryNoSalesSql, hasInventoryNoSalesParams)
     const has_inventory_no_sales = Number(hasInventoryNoSalesResult[0]?.count) || 0
 
-    // 统计promised_land = 0的数量（未选择方案）
-    let noSolutionSql = 'SELECT COUNT(*) as count FROM task WHERE promised_land = 0'
+    // 统计task_status = 0的数量（未选择方案）
+    let noSolutionSql = 'SELECT COUNT(*) as count FROM task WHERE task_status = 0'
     const noSolutionParams: any[] = []
     paramIndex = 1
     if (chargeFilter) {
@@ -762,8 +983,8 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
     const noSolutionResult = await query<{ count: string | number }>(noSolutionSql, noSolutionParams)
     const no_solution = Number(noSolutionResult[0]?.count) || 0
 
-    // 统计promised_land IN (1,2,3)的数量（任务正在进行中）
-    let inProgressSql = 'SELECT COUNT(*) as count FROM task WHERE promised_land IN (1, 2, 3)'
+    // 统计task_status IN (1,2,3)的数量（任务正在进行中）
+    let inProgressSql = 'SELECT COUNT(*) as count FROM task WHERE task_status IN (1, 2, 3)'
     const inProgressParams: any[] = []
     paramIndex = 1
     if (chargeFilter) {
@@ -773,6 +994,30 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
     }
     const inProgressResult = await query<{ count: string | number }>(inProgressSql, inProgressParams)
     const in_progress = Number(inProgressResult[0]?.count) || 0
+
+    // 统计task_status = 4的数量（完成检查）
+    let checkingSql = 'SELECT COUNT(*) as count FROM task WHERE task_status = 4'
+    const checkingParams: any[] = []
+    paramIndex = 1
+    if (chargeFilter) {
+      checkingSql += ` AND charge = $${paramIndex}`
+      checkingParams.push(chargeFilter)
+      paramIndex++
+    }
+    const checkingResult = await query<{ count: string | number }>(checkingSql, checkingParams)
+    const checking = Number(checkingResult[0]?.count) || 0
+
+    // 统计task_status = 5的数量（审核中）
+    let reviewingSql = 'SELECT COUNT(*) as count FROM task WHERE task_status = 5'
+    const reviewingParams: any[] = []
+    paramIndex = 1
+    if (chargeFilter) {
+      reviewingSql += ` AND charge = $${paramIndex}`
+      reviewingParams.push(chargeFilter)
+      paramIndex++
+    }
+    const reviewingResult = await query<{ count: string | number }>(reviewingSql, reviewingParams)
+    const reviewing = Number(reviewingResult[0]?.count) || 0
 
     // 统计 count_down < 0 的数量（超时任务）
     // PostgreSQL: 使用 EXTRACT(DAY FROM ...) 计算日期差
@@ -792,6 +1037,8 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
       has_inventory_no_sales,
       no_solution,
       in_progress,
+      checking,
+      reviewing,
       timeout,
     }
   } catch (error) {
@@ -835,11 +1082,22 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
         }
       })
 
+      let checking = 0
+      let reviewing = 0
+      
+      allData.forEach((row: any) => {
+        const taskStatus = row.task_status ?? 0
+        if (taskStatus === 4) checking++
+        if (taskStatus === 5) reviewing++
+      })
+      
       return {
         over_15_days,
         has_inventory_no_sales,
         no_solution,
         in_progress,
+        checking,
+        reviewing,
         // 统计 count_down < 0 的数量（超时任务，单位：小时）
         timeout: allData.filter((row: any) => {
           if (!row.created_at) return false
@@ -850,7 +1108,7 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
       }
     } catch (fallbackError) {
       console.error('备用统计方法失败:', fallbackError)
-      return { over_15_days: 0, has_inventory_no_sales: 0, no_solution: 0, in_progress: 0, timeout: 0 }
+      return { over_15_days: 0, has_inventory_no_sales: 0, no_solution: 0, in_progress: 0, checking: 0, reviewing: 0, timeout: 0 }
     }
   }
 }
@@ -1057,11 +1315,13 @@ export async function updateTaskPromisedLand(
   promisedLand: 0 | 1 | 2 | 3
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // 更新 promised_land 时，同时更新 count_down（根据新的 promised_land 值计算，单位：小时）
+    // 更新 promised_land 时，同时更新 task_status 和 count_down
+    // task_status 与 promised_land 同步：0=0, 1=1, 2=2, 3=3
     // PostgreSQL: 使用 EXTRACT(EPOCH FROM ...) / 3600 计算小时差
     await execute(
       `UPDATE task SET 
-        promised_land = $1, 
+        promised_land = $1,
+        task_status = $1,
         count_down = CASE 
           WHEN $1 = 0 THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
           ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
@@ -1076,6 +1336,346 @@ export async function updateTaskPromisedLand(
     return {
       success: false,
       error: error.message || '更新方案失败',
+    }
+  }
+}
+
+/**
+ * 添加任务图片URL
+ * @param wareSku SKU货号
+ * @param imageUrl 图片URL
+ * @returns 更新结果
+ */
+export async function addTaskImageUrl(
+  wareSku: string,
+  imageUrl: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // 先获取当前的图片URL数组
+    const currentResult = await query<{ image_urls: any }>(
+      'SELECT image_urls FROM task WHERE ware_sku = $1',
+      [wareSku]
+    )
+    
+    let currentUrls: string[] = []
+    if (currentResult.length > 0 && currentResult[0].image_urls) {
+      try {
+        currentUrls = typeof currentResult[0].image_urls === 'string' 
+          ? JSON.parse(currentResult[0].image_urls) 
+          : currentResult[0].image_urls
+        if (!Array.isArray(currentUrls)) {
+          currentUrls = []
+        }
+      } catch (e) {
+        currentUrls = []
+      }
+    }
+    
+    // 如果图片URL已存在，不重复添加
+    if (currentUrls.includes(imageUrl)) {
+      return { success: true }
+    }
+    
+    // 添加新的图片URL
+    currentUrls.push(imageUrl)
+    
+    await execute(
+      `UPDATE task SET 
+        image_urls = $1::jsonb,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ware_sku = $2`,
+      [JSON.stringify(currentUrls), wareSku]
+    )
+    return { success: true }
+  } catch (error: any) {
+    console.error('添加任务图片URL失败:', error)
+    return {
+      success: false,
+      error: error.message || '添加图片URL失败',
+    }
+  }
+}
+
+/**
+ * 删除任务图片URL
+ * @param wareSku SKU货号
+ * @param imageUrl 要删除的图片URL
+ * @returns 更新结果
+ */
+export async function removeTaskImageUrl(
+  wareSku: string,
+  imageUrl: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // 先获取当前的图片URL数组
+    const currentResult = await query<{ image_urls: any }>(
+      'SELECT image_urls FROM task WHERE ware_sku = $1',
+      [wareSku]
+    )
+    
+    let currentUrls: string[] = []
+    if (currentResult.length > 0 && currentResult[0].image_urls) {
+      try {
+        currentUrls = typeof currentResult[0].image_urls === 'string' 
+          ? JSON.parse(currentResult[0].image_urls) 
+          : currentResult[0].image_urls
+        if (!Array.isArray(currentUrls)) {
+          currentUrls = []
+        }
+      } catch (e) {
+        currentUrls = []
+      }
+    }
+    
+    // 删除指定的图片URL
+    currentUrls = currentUrls.filter(url => url !== imageUrl)
+    
+    await execute(
+      `UPDATE task SET 
+        image_urls = $1::jsonb,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ware_sku = $2`,
+      [JSON.stringify(currentUrls), wareSku]
+    )
+    return { success: true }
+  } catch (error: any) {
+    console.error('删除任务图片URL失败:', error)
+    return {
+      success: false,
+      error: error.message || '删除图片URL失败',
+    }
+  }
+}
+
+/**
+ * 确认完成检查（从任务正在进行中转入完成检查）
+ * @param wareSku SKU货号
+ * @returns 更新结果
+ */
+export async function confirmTaskCheck(
+  wareSku: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // 获取当前任务的 promised_land 值
+    const taskResult = await query<{ promised_land: number }>(
+      'SELECT promised_land FROM task WHERE ware_sku = $1',
+      [wareSku]
+    )
+    
+    if (taskResult.length === 0) {
+      return {
+        success: false,
+        error: '任务不存在',
+      }
+    }
+    
+    const promisedLand = taskResult[0].promised_land ?? 0
+    
+    // 如果 promised_land 为 0，不允许转入完成检查
+    if (promisedLand === 0) {
+      return {
+        success: false,
+        error: '请先选择方案',
+      }
+    }
+    
+    // 更新任务状态：task_status = 4（完成检查）
+    // 保存 promised_land 到 promised_land_snapshot
+    await execute(
+      `UPDATE task SET
+        task_status = 4,
+        promised_land_snapshot = $1,
+        checked_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ware_sku = $2`,
+      [promisedLand, wareSku]
+    )
+    
+    return { success: true }
+  } catch (error: any) {
+    console.error('确认完成检查失败:', error)
+    return {
+      success: false,
+      error: error.message || '确认完成检查失败',
+    }
+  }
+}
+
+/**
+ * 确认审核（从完成检查转入审核中）
+ * @param wareSku SKU货号
+ * @returns 更新结果
+ */
+export async function confirmTaskReview(
+  wareSku: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // 检查任务是否在完成检查状态
+    const taskResult = await query<{ task_status: number }>(
+      'SELECT task_status FROM task WHERE ware_sku = $1',
+      [wareSku]
+    )
+    
+    if (taskResult.length === 0) {
+      return {
+        success: false,
+        error: '任务不存在',
+      }
+    }
+    
+    if (taskResult[0].task_status !== 4) {
+      return {
+        success: false,
+        error: '任务不在完成检查状态',
+      }
+    }
+    
+    // 更新任务状态：task_status = 5（审核中）
+    await execute(
+      `UPDATE task SET
+        task_status = 5,
+        reviewed_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ware_sku = $1`,
+      [wareSku]
+    )
+    
+    return { success: true }
+  } catch (error: any) {
+    console.error('确认审核失败:', error)
+    return {
+      success: false,
+      error: error.message || '确认审核失败',
+    }
+  }
+}
+
+/**
+ * 审核通过（从审核中转入历史任务）
+ * @param wareSku SKU货号
+ * @returns 更新结果
+ */
+export async function approveTask(
+  wareSku: string
+): Promise<{ success: boolean; error?: string }> {
+  const connection = await getConnection()
+  await connection.query('BEGIN')
+  
+  try {
+    // 获取任务信息
+    const taskResult = await connection.query(
+      `SELECT ware_sku, sale_day, charge, promised_land, promised_land_snapshot, 
+              task_status, inventory_num, sales_num, label
+       FROM task WHERE ware_sku = $1`,
+      [wareSku]
+    )
+    
+    if (taskResult.rows.length === 0) {
+      await connection.query('ROLLBACK')
+      return {
+        success: false,
+        error: '任务不存在',
+      }
+    }
+    
+    const task = taskResult.rows[0]
+    
+    // 处理 label 字段
+    const taskLabelValue = processLabelField(task.label)
+    
+    // 插入历史任务记录
+    await connection.query(
+      `INSERT INTO task_history (
+        ware_sku, completed_sale_day, charge, promised_land,
+        inventory_num, sales_num, label, completed_at,
+        task_status_snapshot, review_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, $8, 'approved')`,
+      [
+        task.ware_sku,
+        task.sale_day ?? null,
+        task.charge ?? null,
+        task.promised_land_snapshot ?? task.promised_land ?? 0,
+        task.inventory_num ?? 0,
+        task.sales_num ?? 0,
+        taskLabelValue,
+        task.task_status ?? 0,
+      ]
+    )
+    
+    // 从 task 表中删除已完成的任务
+    await connection.query('DELETE FROM task WHERE ware_sku = $1', [wareSku])
+    
+    await connection.query('COMMIT')
+    return { success: true }
+  } catch (error: any) {
+    await connection.query('ROLLBACK')
+    console.error('审核通过失败:', error)
+    return {
+      success: false,
+      error: error.message || '审核通过失败',
+    }
+  } finally {
+    connection.release()
+  }
+}
+
+/**
+ * 审核打回（从审核中打回完成检查）
+ * @param wareSku SKU货号
+ * @param rejectReason 打回理由
+ * @returns 更新结果
+ */
+export async function rejectTask(
+  wareSku: string,
+  rejectReason: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!rejectReason || rejectReason.trim() === '') {
+      return {
+        success: false,
+        error: '打回理由不能为空',
+      }
+    }
+    
+    // 检查任务是否在审核中状态
+    const taskResult = await query<{ task_status: number }>(
+      'SELECT task_status FROM task WHERE ware_sku = $1',
+      [wareSku]
+    )
+    
+    if (taskResult.length === 0) {
+      return {
+        success: false,
+        error: '任务不存在',
+      }
+    }
+    
+    if (taskResult[0].task_status !== 5) {
+      return {
+        success: false,
+        error: '任务不在审核中状态',
+      }
+    }
+    
+    // 更新任务状态：task_status = 4（回到完成检查）
+    // 记录打回理由和审核状态
+    await execute(
+      `UPDATE task SET
+        task_status = 4,
+        review_status = 'rejected',
+        reject_reason = $1,
+        reviewed_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE ware_sku = $2`,
+      [rejectReason.trim(), wareSku]
+    )
+    
+    return { success: true }
+  } catch (error: any) {
+    console.error('审核打回失败:', error)
+    return {
+      success: false,
+      error: error.message || '审核打回失败',
     }
   }
 }

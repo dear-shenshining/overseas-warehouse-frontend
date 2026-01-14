@@ -26,6 +26,7 @@ export interface LogisticsStatistics {
   delivered: number // 成功签收
   total: number // 总发货：全量数据
   has_transfer: number // 转单：有转单号的数据
+  updated_today: number // 今日处理：updated_at 在今天范围内的数据
 }
 
 /**
@@ -37,6 +38,7 @@ export interface LogisticsStatistics {
  * @param page 页码（从1开始，默认1）
  * @param pageSize 每页数量（默认50）
  * @param createdAtToday 是否只查询今天创建的数据（可选）
+ * @param updatedAtToday 是否只查询今天更新的数据（updated_at 在今天范围内）（可选）
  */
 export async function getLogisticsData(
   searchNum?: string,
@@ -46,7 +48,8 @@ export async function getLogisticsData(
   page: number = 1,
   pageSize: number = 50,
   createdAtToday?: boolean,
-  hasTransferFilter?: boolean
+  hasTransferFilter?: boolean,
+  updatedAtToday?: boolean
 ): Promise<{ data: LogisticsRecord[], total: number }> {
   // 检查新字段是否存在（使用缓存）
   const { hasTransferNum, hasOrderNum, hasNotes, hasTransferDate } = await getLogisticsFields()
@@ -142,6 +145,11 @@ export async function getLogisticsData(
     sql += ` AND DATE(p.created_at) = CURRENT_DATE`
   }
 
+  // 更新时间筛选（今天更新的数据）
+  if (updatedAtToday) {
+    sql += ` AND DATE(p.updated_at) = CURRENT_DATE`
+  }
+
   // 根据状态筛选类型添加筛选条件
   // 注意：由于使用了COALESCE，WHERE条件需要使用COALESCE的结果
   if (statusFilter === 'returned') {
@@ -232,6 +240,11 @@ export async function getLogisticsData(
   // 创建时间筛选（今天创建的数据）
   if (createdAtToday) {
     countSql += ` AND DATE(p.created_at) = CURRENT_DATE`
+  }
+
+  // 更新时间筛选（今天更新的数据）
+  if (updatedAtToday) {
+    countSql += ` AND DATE(p.updated_at) = CURRENT_DATE`
   }
 
   // 状态筛选（简化版，不依赖 LEFT JOIN）
@@ -350,7 +363,10 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
       ) as delivered,
       ${hasTransferNum ? `COUNT(*) FILTER (
         WHERE transfer_num IS NOT NULL AND transfer_num != ''
-      ) as has_transfer` : '0 as has_transfer'}
+      ) as has_transfer` : '0 as has_transfer'},
+      COUNT(*) FILTER (
+        WHERE DATE(updated_at) = CURRENT_DATE
+      ) as updated_today
     FROM post_searchs
     WHERE 1=1${dateWhereClause}
   `
@@ -364,6 +380,7 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
     not_queried: string | number
     delivered: string | number
     has_transfer: string | number
+    updated_today: string | number
   }>(statsSql, dateParams.length > 0 ? dateParams : [])
 
   const result = statsResult[0] || {}
@@ -377,6 +394,7 @@ export async function getLogisticsStatistics(dateFrom?: string, dateTo?: string)
     not_queried: Number(result.not_queried) || 0,
     delivered: Number(result.delivered) || 0,
     has_transfer: Number(result.has_transfer) || 0,
+    updated_today: Number(result.updated_today) || 0,
   }
 }
 

@@ -39,7 +39,11 @@ function getPromisedLandText(promisedLand: number): string {
   }
 }
 
-export default function HistoryTasks() {
+interface HistoryTasksProps {
+  chargeFilter?: string
+}
+
+export default function HistoryTasks({ chargeFilter: propChargeFilter }: HistoryTasksProps) {
   const [searchQuery, setSearchQuery] = useState("")
   const [historyData, setHistoryData] = useState<TaskHistoryRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -52,7 +56,7 @@ export default function HistoryTasks() {
     promised_land_3: 0,
   })
   const [error, setError] = useState<string | null>(null)
-  const [chargeFilter, setChargeFilter] = useState<string | null>(null)
+  const [chargeFilter, setChargeFilter] = useState<string | null>(propChargeFilter || null)
   const [promisedLandFilter, setPromisedLandFilter] = useState<number | null>(null)
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
@@ -112,6 +116,11 @@ export default function HistoryTasks() {
     }
   }
 
+  // 同步外部传入的 chargeFilter
+  useEffect(() => {
+    setChargeFilter(propChargeFilter || null)
+  }, [propChargeFilter])
+
   // 初始加载
   useEffect(() => {
     loadHistoryData()
@@ -143,10 +152,10 @@ export default function HistoryTasks() {
     <div className="space-y-6">
       {/* 搜索和筛选区域 */}
       <Card className="p-6">
-        <div className="flex flex-col gap-4">
-          {/* 搜索框 */}
-          <div className="flex gap-2">
-            <div className="flex-1 relative">
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* SKU搜索 */}
+          <div className="flex-1 min-w-[200px]">
+            <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="输入SKU货号搜索..."
@@ -156,36 +165,24 @@ export default function HistoryTasks() {
                 className="pl-10"
               />
             </div>
-            <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
-              <Search className="h-4 w-4" />
-              {isPending ? "搜索中..." : "搜索"}
-            </Button>
           </div>
 
-          {/* 筛选条件 */}
-          <div className="flex flex-wrap gap-4">
-            <div className="flex-1 min-w-[200px]">
-              <label className="text-sm text-muted-foreground mb-2 block">负责人</label>
-              <Select
-                value={chargeFilter || "all"}
-                onValueChange={(value) => setChargeFilter(value === "all" ? null : value)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="全部负责人" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部负责人</SelectItem>
-                  {chargeList.map((charge) => (
-                    <SelectItem key={charge} value={charge}>
-                      {charge}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          {/* 日期搜索 */}
+          <div className="flex-1 min-w-[280px]">
+            <DateRangePicker
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateChange={(from, to) => {
+                setDateFrom(from || "")
+                setDateTo(to || "")
+              }}
+              placeholder="选择日期范围"
+            />
+          </div>
 
-            <div className="flex-1 min-w-[200px]">
-              <label className="text-sm text-muted-foreground mb-2 block">方案</label>
+          {/* 方案筛选和搜索按钮 */}
+          <div className="flex items-center gap-2">
+            <div className="flex-1 min-w-[180px]">
               <Select
                 value={promisedLandFilter !== null ? promisedLandFilter.toString() : "all"}
                 onValueChange={(value) => setPromisedLandFilter(value === "all" ? null : parseInt(value))}
@@ -202,19 +199,10 @@ export default function HistoryTasks() {
                 </SelectContent>
               </Select>
             </div>
-
-            <div className="flex-1 min-w-[280px]">
-              <label className="text-sm text-muted-foreground mb-2 block">日期范围</label>
-              <DateRangePicker
-                dateFrom={dateFrom}
-                dateTo={dateTo}
-                onDateChange={(from, to) => {
-                  setDateFrom(from || "")
-                  setDateTo(to || "")
-                }}
-                placeholder="选择日期范围"
-              />
-            </div>
+            <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
+              <Search className="h-4 w-4" />
+              {isPending ? "搜索中..." : "搜索"}
+            </Button>
           </div>
         </div>
       </Card>

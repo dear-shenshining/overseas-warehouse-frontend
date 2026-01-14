@@ -16,3 +16,4 @@ CREATE INDEX IF NOT EXISTS idx_orders_operator ON orders(operator);
 -- UPDATE orders SET operator = '运营人员姓名' WHERE store_name = '店铺名称';
 
 
+

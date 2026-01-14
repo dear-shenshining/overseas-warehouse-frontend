@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition, useRef, forwardRef, useImperativeHandle } from "react"
-import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle, RefreshCw, CheckCircle } from "lucide-react"
+import { Search, Download, Upload, Package, Calendar, MapPin, AlertCircle, RefreshCw, CheckCircle, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
@@ -45,10 +45,12 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     delivered: 0,
     total: 0,
     has_transfer: 0,
+    updated_today: 0,
   })
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | null>(null)
   const [hasTransferFilter, setHasTransferFilter] = useState<boolean>(false)
+  const [updatedAtTodayFilter, setUpdatedAtTodayFilter] = useState<boolean>(false)
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
   const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
@@ -115,8 +117,9 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         dateTo && dateTo.trim() ? dateTo : undefined,
         page,
         pageSize,
-        false, // createdAtToday
-        hasTransferFilter // hasTransferFilter
+        undefined, // createdAtToday
+        hasTransferFilter,
+        updatedAtTodayFilter
       )
       if (result.success) {
         setLogisticsData(result.data)
@@ -217,6 +220,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             not_queried: statsResult.value.data.not_queried ?? 0,
             total: statsResult.value.data.total ?? 0,
             has_transfer: statsResult.value.data.has_transfer ?? 0,
+            updated_today: statsResult.value.data.updated_today ?? 0,
           })
         } else {
           console.error("加载统计数据失败:", statsResult.status === 'rejected' ? statsResult.reason : statsResult.value)
@@ -235,6 +239,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             delivered: 0,
             total: 0,
             has_transfer: 0,
+            updated_today: 0,
           })
       } finally {
         setLoading(false)
@@ -242,7 +247,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
 
     loadInitialData()
-  }, [statusFilter, hasTransferFilter, dateFrom, dateTo])
+  }, [statusFilter, hasTransferFilter, updatedAtTodayFilter, dateFrom, dateTo])
 
   // 解析多个发货单号（支持多种分隔符）
   const parseSearchNumbers = (input: string): string[] => {
@@ -328,10 +333,16 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     setHasTransferFilter(!hasTransferFilter)
   }
 
+  // 处理今日更新卡片点击
+  const handleUpdatedTodayCardClick = () => {
+    setUpdatedAtTodayFilter(!updatedAtTodayFilter)
+  }
+
   // 重置所有筛选
   const handleResetFilters = () => {
     setStatusFilter(null)
     setHasTransferFilter(false)
+    setUpdatedAtTodayFilter(false)
     setDateFrom("")
     setDateTo("")
     setSearchQuery("")
@@ -571,6 +582,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           dateTo: dateTo && dateTo.trim() ? dateTo : undefined,
           searchNums: searchQuery ? parseSearchNumbers(searchQuery) : undefined,
           hasTransferFilter: hasTransferFilter || undefined,
+          updatedAtToday: updatedAtTodayFilter || undefined,
         }
 
         const result = await updateLogisticsStatus(progress.lastProcessedId, filters)
@@ -766,7 +778,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         1, // 从第1页开始
         100000, // 使用很大的pageSize来获取所有数据
         false, // 不限制创建时间
-        hasTransferFilter // 转单筛选
+        hasTransferFilter, // 转单筛选
+        updatedAtTodayFilter // 今日更新筛选
       )
 
       if (!result.success) {
@@ -893,172 +906,6 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
   }
 
-  // 导出今日数据功能（导出今天创建的数据，保留其他筛选条件）
-  const handleExportToday = async () => {
-    try {
-      // 显示加载提示
-      console.log("正在准备导出今日数据，请稍候...")
-      
-      // 确定要导出的搜索单号：如果有实际搜索到的单号列表，使用它；否则使用searchQuery
-      let exportSearchQuery: string | undefined = undefined
-      if (actualSearchNumbers.length > 0) {
-        // 如果有实际搜索到的单号，使用它们（逗号分隔）
-        exportSearchQuery = actualSearchNumbers.join(',')
-      } else if (searchQuery && searchQuery.trim()) {
-        // 如果没有实际搜索到的单号列表，但有搜索输入，解析并查询
-        const searchNumbers = parseSearchNumbers(searchQuery)
-        if (searchNumbers.length > 0) {
-          // 先批量查询哪些单号存在
-          const batchResult = await batchSearchLogistics(searchNumbers)
-          if (batchResult.success && batchResult.found.length > 0) {
-            exportSearchQuery = batchResult.found.join(',')
-          } else {
-            // 如果没有找到任何单号，提示用户
-            alert("没有找到可导出的数据")
-            return
-          }
-        } else {
-          exportSearchQuery = searchQuery.trim()
-        }
-      }
-      
-      // 获取所有筛选后的数据（不分页，使用很大的pageSize），并限制为今天创建的数据
-      const result = await fetchLogisticsData(
-        exportSearchQuery,
-        statusFilter || undefined,
-        dateFrom && dateFrom.trim() ? dateFrom : undefined,
-        dateTo && dateTo.trim() ? dateTo : undefined,
-        1, // 从第1页开始
-        100000, // 使用很大的pageSize来获取所有数据
-        true, // 只导出今天创建的数据
-        hasTransferFilter // 转单筛选
-      )
-
-      if (!result.success) {
-        alert(`导出失败：${result.error || "未知错误"}`)
-        return
-      }
-
-      if (result.data.length === 0) {
-        alert("没有今日数据可导出")
-        return
-      }
-
-      // 准备导出数据（订单号放在第一列）
-      const exportData = result.data.map((record) => ({
-        订单号: record.order_num || '',
-        发货单号: record.search_num,
-        状态: getStatusLabel(record.states),
-        发货日期: record.Ship_date 
-          ? new Date(record.Ship_date).toLocaleDateString('zh-CN')
-          : '',
-        发货渠道: record.channel || '',
-        转单号: record.transfer_num || '',
-        转单日期: record.transfer_date 
-          ? new Date(record.transfer_date).toLocaleDateString('zh-CN')
-          : '',
-        备注: record.notes || '',
-      }))
-
-      // 使用 xlsx 库导出
-      const wb = XLSX.utils.book_new()
-      const ws = XLSX.utils.json_to_sheet(exportData)
-
-      // 设置列宽（订单号在第一列）
-      const colWidths = [
-        { wch: 20 }, // 订单号
-        { wch: 20 }, // 发货单号
-        { wch: 15 }, // 状态
-        { wch: 15 }, // 发货日期
-        { wch: 15 }, // 发货渠道
-        { wch: 20 }, // 转单号
-        { wch: 15 }, // 转单日期
-        { wch: 30 }, // 备注
-      ]
-      ws['!cols'] = colWidths
-
-      // 添加工作表到工作簿
-      XLSX.utils.book_append_sheet(wb, ws, "今日发货数据")
-
-      // 生成文件名：筛选日期（仅包括月日）+海外物流+筛选分类（若有）+今日+当前年月日
-      // 例如：1.2-1.5海外物流三天未上网今日20260109.xlsx
-      
-      // 获取筛选分类的中文名称
-      const getFilterLabel = (filter: typeof statusFilter): string => {
-        const filterMap: Record<string, string> = {
-          'in_transit': '运输中',
-          'returned': '投递失败退回',
-          'not_online': '未上网',
-          'online_abnormal': '三天未上网',
-          'not_queried': '未查询',
-          'delivered': '成功签收',
-          'total': '总发货',
-          'has_transfer': '转单',
-        }
-        return filter ? filterMap[filter] || '' : ''
-      }
-
-      // 格式化日期为月日格式（例如：1.2）
-      const formatMonthDay = (dateStr: string): string => {
-        if (!dateStr) return ''
-        try {
-          const date = new Date(dateStr)
-          const month = date.getMonth() + 1
-          const day = date.getDate()
-          return `${month}.${day}`
-        } catch {
-          return ''
-        }
-      }
-
-      // 构建文件名各部分
-      const parts: string[] = []
-
-      // 1. 筛选日期（仅包括月日）
-      if (dateFrom && dateTo) {
-        const fromStr = formatMonthDay(dateFrom)
-        const toStr = formatMonthDay(dateTo)
-        if (fromStr && toStr) {
-          parts.push(`${fromStr}-${toStr}`)
-        }
-      } else if (dateFrom) {
-        const fromStr = formatMonthDay(dateFrom)
-        if (fromStr) {
-          parts.push(fromStr)
-        }
-      }
-
-      // 2. 海外物流（固定文本）
-      parts.push('海外物流')
-
-      // 3. 筛选分类（若有）
-      const filterLabel = getFilterLabel(statusFilter)
-      if (filterLabel) {
-        parts.push(filterLabel)
-      }
-
-      // 4. 今日（标识）
-      parts.push('今日')
-
-      // 5. 当前年月日（例如：20260109）
-      const today = new Date()
-      const year = today.getFullYear()
-      const month = String(today.getMonth() + 1).padStart(2, '0')
-      const day = String(today.getDate()).padStart(2, '0')
-      parts.push(`${year}${month}${day}`)
-
-      // 组合文件名
-      const fileName = `${parts.join('')}.xlsx`
-
-      // 导出文件
-      XLSX.writeFile(wb, fileName)
-      
-      console.log(`✅ 成功导出今日数据 ${exportData.length} 条记录`)
-    } catch (error: any) {
-      console.error("导出今日数据失败:", error)
-      alert(`导出今日数据失败: ${error.message || "未知错误"}`)
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -1100,12 +947,6 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           <Button onClick={handleExport} className="gap-2">
             <Download className="h-4 w-4" />
             导出数据
-          </Button>
-          
-          {/* 导出今日数据 */}
-          <Button onClick={handleExportToday} className="gap-2" variant="outline">
-            <Download className="h-4 w-4" />
-            导出今日数据
           </Button>
           
           {/* 导入数据 */}
@@ -1248,6 +1089,23 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             <div>
               <p className="text-sm text-muted-foreground">未查询</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.not_queried}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
+            updatedAtTodayFilter ? 'ring-2 ring-purple-500 bg-purple-50' : ''
+          }`}
+          onClick={handleUpdatedTodayCardClick}
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-purple-100 rounded-lg">
+              <Clock className="h-6 w-6 text-purple-600" />
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">今日更新</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.updated_today}</p>
             </div>
           </div>
         </Card>

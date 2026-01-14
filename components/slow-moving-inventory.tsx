@@ -19,7 +19,11 @@ import type { InventoryRecord } from "@/lib/inventory-data"
 import { getLabelName } from "@/lib/label-mapping"
 import * as XLSX from "xlsx"
 
-export default function SlowMovingInventory() {
+interface SlowMovingInventoryProps {
+  chargeFilter?: string
+}
+
+export default function SlowMovingInventory({ chargeFilter }: SlowMovingInventoryProps) {
   const [searchQuery, setSearchQuery] = useState("")
   const [inventoryData, setInventoryData] = useState<InventoryRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -49,7 +53,12 @@ export default function SlowMovingInventory() {
       setError(null)
       const result = await fetchInventoryData(searchSku, filter || undefined)
       if (result.success) {
-        setInventoryData(result.data)
+        // 应用负责人筛选
+        let filteredData = result.data
+        if (chargeFilter) {
+          filteredData = filteredData.filter((item) => item.charge === chargeFilter)
+        }
+        setInventoryData(filteredData)
         setCurrentPage(1) // 重置到第一页
       } else {
         setError(result.error || "加载库存数据失败")
@@ -67,7 +76,7 @@ export default function SlowMovingInventory() {
   // 加载统计数据
   const loadStatistics = async () => {
     try {
-      const result = await fetchInventoryStatistics()
+      const result = await fetchInventoryStatistics(chargeFilter)
       if (result.success) {
         setStatistics(result.data)
       }
@@ -81,7 +90,8 @@ export default function SlowMovingInventory() {
   useEffect(() => {
     loadInventoryData(undefined, labelFilter)
     loadStatistics()
-  }, [labelFilter])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelFilter, chargeFilter])
 
   // 搜索功能
   const handleSearch = () => {
@@ -339,7 +349,7 @@ export default function SlowMovingInventory() {
               <Calendar className="h-6 w-6 text-chart-1" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">在售天数超15天</p>
+              <p className="text-sm text-muted-foreground">在售天数超20天</p>
               <p className="text-2xl font-semibold text-foreground">{statistics.over_15_days}</p>
             </div>
           </div>

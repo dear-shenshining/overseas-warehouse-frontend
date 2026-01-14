@@ -6,15 +6,15 @@ import { redirect } from 'next/navigation'
 /**
  * 登录验证
  * 支持两套密码系统：
- * - 密码1：可以查看"每日发货毛利分析"和"每日发货毛利异常"
- * - 密码2：只能查看"每日发货毛利异常"，不能查看"每日发货毛利分析"
+ * - 密码1（管理员密码）：可以查看"每日发货毛利分析"和"每日发货毛利异常"，可以审核任务
+ * - 密码2（普通用户密码）：只能查看"每日发货毛利异常"，不能查看"每日发货毛利分析"，不能审核任务
  */
 export async function login(username: string, password: string) {
   try {
     // 从环境变量获取配置的用户名和密码
     const validUsername = process.env.ADMIN_USERNAME || 'admin'
-    const fullAccessPassword = process.env.FULL_ACCESS_PASSWORD || 'admin123' // 完整权限密码
-    const limitedAccessPassword = process.env.LIMITED_ACCESS_PASSWORD || 'viewer123' // 受限权限密码
+    const fullAccessPassword = process.env.FULL_ACCESS_PASSWORD || 'admin123' // 完整权限密码（管理员）
+    const limitedAccessPassword = process.env.LIMITED_ACCESS_PASSWORD || 'viewer123' // 受限权限密码（普通用户）
 
     // 验证用户名
     if (username !== validUsername) {
@@ -26,12 +26,15 @@ export async function login(username: string, password: string) {
 
     // 验证密码并确定权限
     let canViewProfitAnalysis = false
+    let isAdmin = false
     if (password === fullAccessPassword) {
-      // 完整权限：可以查看"每日发货毛利分析"和"每日发货毛利异常"
+      // 完整权限（管理员）：可以查看"每日发货毛利分析"和"每日发货毛利异常"，可以审核任务
       canViewProfitAnalysis = true
+      isAdmin = true
     } else if (password === limitedAccessPassword) {
-      // 受限权限：只能查看"每日发货毛利异常"
+      // 受限权限（普通用户）：只能查看"每日发货毛利异常"
       canViewProfitAnalysis = false
+      isAdmin = false
     } else {
       return {
         success: false,
@@ -70,10 +73,20 @@ export async function login(username: string, password: string) {
       path: '/',
     })
 
+    // 存储管理员权限（用于审核功能）
+    cookieStore.set('is_admin', isAdmin ? 'true' : 'false', {
+      httpOnly: false, // 允许前端读取
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 24 * 30,
+      path: '/',
+    })
+
     return {
       success: true,
       username,
       canViewProfitAnalysis,
+      isAdmin,
     }
   } catch (error: any) {
     console.error('登录失败:', error)
@@ -93,6 +106,7 @@ export async function logout() {
     cookieStore.delete('session_token')
     cookieStore.delete('username')
     cookieStore.delete('can_view_profit_analysis')
+    cookieStore.delete('is_admin')
     
     redirect('/login')
   } catch (error: any) {
@@ -110,12 +124,14 @@ export async function checkAuth() {
     const sessionToken = cookieStore.get('session_token')
     const username = cookieStore.get('username')
     const canViewProfitAnalysis = cookieStore.get('can_view_profit_analysis')
+    const isAdmin = cookieStore.get('is_admin')
 
     if (!sessionToken || !username) {
       return {
         isAuthenticated: false,
         username: null,
         canViewProfitAnalysis: false,
+        isAdmin: false,
       }
     }
 
@@ -123,6 +139,7 @@ export async function checkAuth() {
       isAuthenticated: true,
       username: username.value,
       canViewProfitAnalysis: canViewProfitAnalysis?.value === 'true',
+      isAdmin: isAdmin?.value === 'true',
     }
   } catch (error: any) {
     console.error('检查认证状态失败:', error)
@@ -130,6 +147,7 @@ export async function checkAuth() {
       isAuthenticated: false,
       username: null,
       canViewProfitAnalysis: false,
+      isAdmin: false,
     }
   }
 }

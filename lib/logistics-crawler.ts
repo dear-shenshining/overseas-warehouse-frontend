@@ -38,6 +38,7 @@ async function fetchPendingSearchNumbers(
     dateTo?: string
     searchNums?: string[]
     hasTransferFilter?: boolean
+    updatedAtToday?: boolean
   }
 ): Promise<{
   items: Array<{ id: number; search_num: string; states: string | null }>
@@ -101,6 +102,11 @@ async function fetchPendingSearchNumbers(
       whereConditions.push(`search_num IN (${placeholders})`)
       params.push(...filters.searchNums)
       paramIndex += filters.searchNums.length
+    }
+
+    // 应用更新时间筛选（今天更新的数据）
+    if (filters?.updatedAtToday) {
+      whereConditions.push(`DATE(updated_at) = CURRENT_DATE`)
     }
 
     const whereClause = whereConditions.join(' AND ')
@@ -170,6 +176,9 @@ async function fetchPendingSearchNumbers(
       maxIdWhereWithParams.push(`search_num IN (${placeholders})`)
       maxIdParams.push(...filters.searchNums)
     }
+    if (filters?.updatedAtToday) {
+      maxIdWhereWithParams.push(`DATE(updated_at) = CURRENT_DATE`)
+    }
     
     const maxIdQuery = await query<{ max_id: number }>(`
       SELECT MAX(id) as max_id
@@ -190,11 +199,11 @@ async function fetchPendingSearchNumbers(
 /**
  * 更新 post_searchs 表的状态
  * 如果 newState 为 null，只更新 updated_at 时间戳
- * 否则同时更新 states 和 updated_at
+ * 否则只在状态真正改变时才更新 states 和 updated_at
  */
 async function updateSearchState(searchNum: string, newState: string | null): Promise<boolean> {
   try {
-    // 先查询当前状态，用于调试
+    // 先查询当前状态，用于调试和比较
     const currentState = await query<{ states: string | null; updated_at: Date | null }>(
       `SELECT states, updated_at FROM post_searchs WHERE search_num = $1`,
       [searchNum]
@@ -208,11 +217,23 @@ async function updateSearchState(searchNum: string, newState: string | null): Pr
     const oldState = currentState[0].states
     const oldUpdatedAt = currentState[0].updated_at
 
+    // 如果 newState 不为 null，检查状态是否真的改变了
+    if (newState !== null) {
+      // 比较状态是否相同（考虑 NULL 的情况）
+      const stateChanged = oldState !== newState || (oldState === null && newState !== null) || (oldState !== null && newState === null)
+      
+      if (!stateChanged) {
+        // 状态没有改变，不更新 updated_at
+        console.log(`⏭️ 追踪号 ${searchNum} 状态未改变（${oldState}），跳过更新 updated_at`)
+        return true // 返回成功，但不更新数据库
+      }
+    }
+
     let sql: string
     let params: any[]
 
     if (newState === null) {
-      // 只更新时间戳
+      // 只更新时间戳（用于标记已查询但无历史记录的情况）
       sql = `
         UPDATE post_searchs
         SET updated_at = CURRENT_TIMESTAMP
@@ -220,7 +241,7 @@ async function updateSearchState(searchNum: string, newState: string | null): Pr
       `
       params = [searchNum]
     } else {
-      // 更新状态和时间戳
+      // 更新状态和时间戳（状态已确认改变）
       sql = `
         UPDATE post_searchs
         SET states = $1, updated_at = CURRENT_TIMESTAMP
@@ -545,6 +566,7 @@ export async function runCrawler(
     dateFrom?: string
     dateTo?: string
     searchNums?: string[]
+    updatedAtToday?: boolean
   }
 ): Promise<{
   success: boolean
