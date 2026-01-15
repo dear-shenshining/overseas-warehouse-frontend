@@ -88,8 +88,11 @@ export default function SlowMovingInventory({ chargeFilter }: SlowMovingInventor
 
   // 初始加载
   useEffect(() => {
-    loadInventoryData(undefined, labelFilter)
-    loadStatistics()
+    // 并行加载数据和统计
+    Promise.all([
+      loadInventoryData(undefined, labelFilter),
+      loadStatistics()
+    ]).catch(console.error)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labelFilter, chargeFilter])
 
@@ -153,12 +156,6 @@ export default function SlowMovingInventory({ chargeFilter }: SlowMovingInventor
       // 调用Server Action导入
       const result = await importInventoryFile(formData)
 
-      // 导入成功后，刷新数据
-      if (result.success) {
-        await loadInventoryData(searchQuery, labelFilter)
-        await loadStatistics()
-      }
-
       setImportResult({
         success: result.success,
         message: result.message,
@@ -166,9 +163,11 @@ export default function SlowMovingInventory({ chargeFilter }: SlowMovingInventor
       })
 
       if (result.success) {
-        // 导入成功，刷新数据
-        loadInventoryData(searchQuery || undefined, labelFilter)
-        loadStatistics()
+        // 导入成功，并行刷新数据
+        await Promise.all([
+          loadInventoryData(searchQuery || undefined, labelFilter),
+          loadStatistics()
+        ])
       }
     } catch (error: any) {
       console.error('导入失败:', error)

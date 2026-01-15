@@ -138,9 +138,15 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
     try {
       const result = await updateTaskPromisedLand(wareSku, promisedLand)
       if (result.success) {
-        // 重新加载数据以获取最新的失败次数
-        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
+        // 乐观更新：立即更新本地状态
+        setTaskData((prev) =>
+          prev.map((item) =>
+            item.ware_sku === wareSku ? { ...item, promised_land: promisedLand } : item
+          )
+        )
         toast.success('方案已更新')
+        // 后台重新加载数据以获取最新的失败次数和倒计时（不阻塞UI）
+        loadTaskData(searchQuery || undefined, labelFilter, statusFilter).catch(console.error)
       } else {
         console.error('更新方案失败:', result.error)
         toast.error('更新方案失败：' + (result.error || '未知错误'))
@@ -208,18 +214,29 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
         }
       }
 
-      // 将所有上传成功的图片URL添加到数据库
+      // 将所有上传成功的图片URL添加到数据库（批量处理）
       if (uploadedUrls.length > 0) {
-        for (const imageUrl of uploadedUrls) {
-          const updateResult = await addTaskImageUrl(wareSku, imageUrl)
-          if (!updateResult.success) {
-            toast.error(`添加图片URL失败：${updateResult.error || '未知错误'}`)
-          }
+        // 并行添加所有图片URL
+        const updateResults = await Promise.all(
+          uploadedUrls.map(imageUrl => addTaskImageUrl(wareSku, imageUrl))
+        )
+        
+        const failedCount = updateResults.filter(r => !r.success).length
+        if (failedCount > 0) {
+          toast.error(`${failedCount} 张图片添加失败`)
         }
         
-        // 重新加载数据以获取最新的图片列表
-        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
+        // 乐观更新：立即更新本地状态
+        setTaskData((prev) =>
+          prev.map((item) =>
+            item.ware_sku === wareSku
+              ? { ...item, image_urls: [...(item.image_urls || []), ...uploadedUrls] }
+              : item
+          )
+        )
         toast.success(`成功上传 ${uploadedUrls.length} 张图片`)
+        // 后台重新加载数据以确保数据一致性（不阻塞UI）
+        loadTaskData(searchQuery || undefined, labelFilter, statusFilter).catch(console.error)
       }
     } catch (error: any) {
       console.error('上传图片失败:', error)
@@ -332,8 +349,11 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
       const result = await confirmTaskCheck(wareSku)
       if (result.success) {
         toast.success('已进入完成检查')
-        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
-        await loadStatistics()
+        // 并行加载数据和统计
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter),
+          loadStatistics()
+        ])
       } else {
         toast.error('确认失败：' + (result.error || '未知错误'))
       }
@@ -349,8 +369,11 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
       const result = await confirmTaskReview(wareSku)
       if (result.success) {
         toast.success('已进入审核')
-        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
-        await loadStatistics()
+        // 并行加载数据和统计
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter),
+          loadStatistics()
+        ])
       } else {
         toast.error('确认失败：' + (result.error || '未知错误'))
       }
@@ -366,8 +389,11 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
       const result = await approveTask(wareSku)
       if (result.success) {
         toast.success('审核通过，任务已完成')
-        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
-        await loadStatistics()
+        // 并行加载数据和统计
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter),
+          loadStatistics()
+        ])
       } else {
         toast.error('审核失败：' + (result.error || '未知错误'))
       }
@@ -390,8 +416,11 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
         setRejectDialogOpen(false)
         setRejectSku(null)
         setRejectReason("")
-        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
-        await loadStatistics()
+        // 并行加载数据和统计
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter),
+          loadStatistics()
+        ])
       } else {
         toast.error('打回失败：' + (result.error || '未知错误'))
       }
@@ -747,18 +776,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                           // 其他状态：可编辑
                           <Select
                             value={record.promised_land?.toString() || '0'}
-                            onValueChange={async (value) => {
-                              const newValue = parseInt(value) as 0 | 1 | 2 | 3
-                              setUpdatingSku(record.ware_sku)
-                              const result = await updateTaskPromisedLand(record.ware_sku, newValue)
-                              if (result.success) {
-                                await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
-                                toast.success('方案已更新')
-                              } else {
-                                toast.error('更新方案失败：' + (result.error || '未知错误'))
-                              }
-                              setUpdatingSku(null)
-                            }}
+                            onValueChange={(value) => handlePromisedLandChange(record.ware_sku, value)}
                             disabled={updatingSku === record.ware_sku}
                           >
                             <SelectTrigger className="w-[140px] h-8 text-sm">
@@ -791,23 +809,47 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                               onChange={(e) => setEditingNotes({...editingNotes, value: e.target.value})}
                               onBlur={async () => {
                                 if (editingNotes) {
+                                  const notesValue = editingNotes.value || null
                                   setUpdatingNotesSku(record.ware_sku)
-                                  const result = await updateTaskNotes(record.ware_sku, editingNotes.value || null)
-                                  if (result.success) {
-                                    // 更新本地数据
+                                  
+                                  // 乐观更新：立即更新本地状态
+                                  setTaskData((prev) =>
+                                    prev.map((item) =>
+                                      item.ware_sku === record.ware_sku
+                                        ? { ...item, notes: notesValue }
+                                        : item
+                                    )
+                                  )
+                                  setEditingNotes(null)
+                                  
+                                  try {
+                                    const result = await updateTaskNotes(record.ware_sku, notesValue)
+                                    if (result.success) {
+                                      toast.success('备注已更新')
+                                    } else {
+                                      // 更新失败，回滚本地状态
+                                      setTaskData((prev) =>
+                                        prev.map((item) =>
+                                          item.ware_sku === record.ware_sku
+                                            ? { ...item, notes: record.notes || null }
+                                            : item
+                                        )
+                                      )
+                                      toast.error('更新备注失败：' + (result.error || '未知错误'))
+                                    }
+                                  } catch (error: any) {
+                                    // 更新失败，回滚本地状态
                                     setTaskData((prev) =>
                                       prev.map((item) =>
                                         item.ware_sku === record.ware_sku
-                                          ? { ...item, notes: editingNotes.value || null }
+                                          ? { ...item, notes: record.notes || null }
                                           : item
                                       )
                                     )
-                                    setEditingNotes(null)
-                                    toast.success('备注已更新')
-                                  } else {
-                                    toast.error('更新备注失败：' + (result.error || '未知错误'))
+                                    toast.error('更新备注失败：' + (error?.message || '未知错误'))
+                                  } finally {
+                                    setUpdatingNotesSku(null)
                                   }
-                                  setUpdatingNotesSku(null)
                                 }
                               }}
                               onKeyPress={(e) => {

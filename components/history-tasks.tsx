@@ -26,12 +26,21 @@ import { DateRangePicker } from "@/components/ui/date-range-picker"
 import type { TaskHistoryRecord } from "@/lib/inventory-data"
 
 // 方案映射
-function getPromisedLandText(promisedLand: number): string {
+function getPromisedLandText(promisedLand: number, failureCount?: number): string {
   switch (promisedLand) {
     case 1:
       return '退回厂家'
     case 2:
-      return '降价清仓'
+      // 根据失败次数显示不同的降价清仓选项
+      if (failureCount === 0) {
+        return '降价清仓（20%）'
+      } else if (failureCount === 1) {
+        return '降价清仓（10%）'
+      } else if (failureCount === 2) {
+        return '降价清仓（0%）'
+      } else {
+        return '降价清仓'
+      }
     case 3:
       return '打处理'
     default:
@@ -125,9 +134,12 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
 
   // 初始加载
   useEffect(() => {
-    loadHistoryData()
-    loadStatistics()
-    loadChargeList()
+    // 并行加载数据、统计和负责人列表
+    Promise.all([
+      loadHistoryData(),
+      loadStatistics(),
+      loadChargeList()
+    ]).catch(console.error)
   }, [chargeFilter, promisedLandFilter, dateFrom, dateTo, reviewStatusFilter])
 
   // 搜索功能
@@ -378,7 +390,7 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
                       </td>
                       <td className="px-6 py-4">
                         <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-muted text-foreground">
-                          {getPromisedLandText(record.promised_land)}
+                          {getPromisedLandText(record.promised_land, record.price_reduction_failure_count)}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-sm text-muted-foreground">
