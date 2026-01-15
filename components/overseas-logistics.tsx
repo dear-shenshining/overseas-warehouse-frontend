@@ -48,11 +48,33 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     updated_today: 0,
   })
   const [error, setError] = useState<string | null>(null)
+  // 获取当月第一天和最后一天的辅助函数
+  const getCurrentMonthRange = () => {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = now.getMonth()
+    
+    // 当月第一天
+    const firstDay = new Date(year, month, 1)
+    const dateFrom = `${year}-${String(month + 1).padStart(2, '0')}-${String(firstDay.getDate()).padStart(2, '0')}`
+    
+    // 当月最后一天
+    const lastDay = new Date(year, month + 1, 0)
+    const dateTo = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
+    
+    return { dateFrom, dateTo }
+  }
+
   const [statusFilter, setStatusFilter] = useState<'in_transit' | 'returned' | 'not_online' | 'online_abnormal' | 'not_queried' | 'delivered' | 'total' | null>(null)
   const [hasTransferFilter, setHasTransferFilter] = useState<boolean>(false)
   const [updatedAtTodayFilter, setUpdatedAtTodayFilter] = useState<boolean>(false)
-  const [dateFrom, setDateFrom] = useState<string>("")
-  const [dateTo, setDateTo] = useState<string>("")
+  const { dateFrom: defaultDateFrom, dateTo: defaultDateTo } = getCurrentMonthRange()
+  // 日期选择器的值（不会自动触发搜索）
+  const [dateFrom, setDateFrom] = useState<string>(defaultDateFrom)
+  const [dateTo, setDateTo] = useState<string>(defaultDateTo)
+  // 实际用于搜索的日期（点击搜索按钮后更新）
+  const [activeDateFrom, setActiveDateFrom] = useState<string>(defaultDateFrom)
+  const [activeDateTo, setActiveDateTo] = useState<string>(defaultDateTo)
   const [editingField, setEditingField] = useState<{id: number, field: 'transfer_num' | 'order_num' | 'notes', value: string} | null>(null)
   const [searchDialogOpen, setSearchDialogOpen] = useState(false)
   const [searchResult, setSearchResult] = useState<{total: number, found: number, notFound: string[]} | null>(null)
@@ -113,8 +135,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       const result = await fetchLogisticsData(
         searchNum, 
         filter || undefined, 
-        dateFrom && dateFrom.trim() ? dateFrom : undefined,
-        dateTo && dateTo.trim() ? dateTo : undefined,
+        activeDateFrom && activeDateFrom.trim() ? activeDateFrom : undefined,
+        activeDateTo && activeDateTo.trim() ? activeDateTo : undefined,
         page,
         pageSize,
         undefined, // createdAtToday
@@ -148,8 +170,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   // 加载统计数据
   const loadStatistics = async () => {
     try {
-      const dateFromValue = dateFrom && dateFrom.trim() ? dateFrom : undefined
-      const dateToValue = dateTo && dateTo.trim() ? dateTo : undefined
+      const dateFromValue = activeDateFrom && activeDateFrom.trim() ? activeDateFrom : undefined
+      const dateToValue = activeDateTo && activeDateTo.trim() ? activeDateTo : undefined
       
       console.log('📊 加载统计数据，日期筛选:', { dateFrom: dateFromValue, dateTo: dateToValue })
       
@@ -183,16 +205,16 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             fetchLogisticsData(
               undefined, 
               statusFilter || undefined, 
-              dateFrom && dateFrom.trim() ? dateFrom : undefined,
-              dateTo && dateTo.trim() ? dateTo : undefined,
+              activeDateFrom && activeDateFrom.trim() ? activeDateFrom : undefined,
+              activeDateTo && activeDateTo.trim() ? activeDateTo : undefined,
               1, // page
               pageSize,
               false, // createdAtToday
               hasTransferFilter // hasTransferFilter
             ),
           fetchLogisticsStatistics(
-            dateFrom && dateFrom.trim() ? dateFrom : undefined,
-            dateTo && dateTo.trim() ? dateTo : undefined
+            activeDateFrom && activeDateFrom.trim() ? activeDateFrom : undefined,
+            activeDateTo && activeDateTo.trim() ? activeDateTo : undefined
           )
         ])
 
@@ -247,7 +269,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     }
 
     loadInitialData()
-  }, [statusFilter, hasTransferFilter, updatedAtTodayFilter, dateFrom, dateTo])
+  }, [statusFilter, hasTransferFilter, updatedAtTodayFilter, activeDateFrom, activeDateTo])
 
   // 解析多个发货单号（支持多种分隔符）
   const parseSearchNumbers = (input: string): string[] => {
@@ -265,10 +287,15 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
   // 搜索功能（支持多个单号）
   const handleSearch = async () => {
+    // 点击搜索时，更新实际用于搜索的日期
+    setActiveDateFrom(dateFrom)
+    setActiveDateTo(dateTo)
+    
     if (!searchQuery.trim()) {
-      // 如果没有输入，直接加载所有数据
+      // 如果没有输入，直接加载所有数据（使用更新后的日期）
       startTransition(() => {
         loadLogisticsData(undefined, statusFilter, 1)
+        loadStatistics()
       })
       return
     }
@@ -280,6 +307,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       setActualSearchNumbers(searchNumbers) // 保存搜索的单号
       startTransition(() => {
         loadLogisticsData(searchNumbers[0], statusFilter, 1)
+        loadStatistics()
       })
     } else {
       // 多个单号，先批量查询，然后显示结果
@@ -297,6 +325,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           setActualSearchNumbers(result.found) // 保存实际找到的单号
           startTransition(() => {
             loadLogisticsData(result.found.join(','), statusFilter, 1)
+            loadStatistics()
           })
         } else {
           setActualSearchNumbers([]) // 没有找到，清空
@@ -312,8 +341,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
   const handleClearSearch = () => {
     setSearchQuery("")
     setActualSearchNumbers([]) // 清空实际搜索到的单号列表
+    // 清空搜索时，使用当前的日期筛选
     startTransition(() => {
       loadLogisticsData(undefined, statusFilter, 1)
+      loadStatistics()
     })
   }
 
@@ -343,12 +374,18 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     setStatusFilter(null)
     setHasTransferFilter(false)
     setUpdatedAtTodayFilter(false)
-    setDateFrom("")
-    setDateTo("")
+    // 重置日期选择器为当月
+    const { dateFrom: defaultDateFrom, dateTo: defaultDateTo } = getCurrentMonthRange()
+    setDateFrom(defaultDateFrom)
+    setDateTo(defaultDateTo)
+    // 重置实际用于搜索的日期
+    setActiveDateFrom(defaultDateFrom)
+    setActiveDateTo(defaultDateTo)
     setSearchQuery("")
     setActualSearchNumbers([]) // 清空实际搜索到的单号列表
     startTransition(() => {
       loadLogisticsData(undefined, null, 1)
+      loadStatistics()
     })
   }
 
@@ -773,8 +810,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       const result = await fetchLogisticsData(
         exportSearchQuery,
         statusFilter || undefined,
-        dateFrom && dateFrom.trim() ? dateFrom : undefined,
-        dateTo && dateTo.trim() ? dateTo : undefined,
+        activeDateFrom && activeDateFrom.trim() ? activeDateFrom : undefined,
+        activeDateTo && activeDateTo.trim() ? activeDateTo : undefined,
         1, // 从第1页开始
         100000, // 使用很大的pageSize来获取所有数据
         false, // 不限制创建时间
