@@ -492,6 +492,26 @@ export async function updateTaskPromisedLand(wareSku: string, promisedLand: 0 | 
 }
 
 /**
+ * 更新任务备注
+ * @param wareSku SKU货号
+ * @param notes 备注内容
+ * @returns 更新结果
+ */
+export async function updateTaskNotes(wareSku: string, notes: string | null) {
+  try {
+    const { updateTaskNotes } = await import('@/lib/inventory-data')
+    const result = await updateTaskNotes(wareSku, notes)
+    return result
+  } catch (error: any) {
+    console.error('更新任务备注失败:', error)
+    return {
+      success: false,
+      error: error.message || '更新备注失败',
+    }
+  }
+}
+
+/**
  * 获取历史任务数据
  * @param searchSku 搜索SKU（可选）
  * @param chargeFilter 负责人筛选（可选）
@@ -505,11 +525,12 @@ export async function fetchTaskHistoryData(
   chargeFilter?: string,
   promisedLandFilter?: number,
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  reviewStatusFilter?: 'approved' | 'failed' | null
 ) {
   try {
     const { getTaskHistoryData } = await import('@/lib/inventory-data')
-    const data = await getTaskHistoryData(searchSku, chargeFilter, promisedLandFilter, dateFrom, dateTo)
+    const data = await getTaskHistoryData(searchSku, chargeFilter, promisedLandFilter, dateFrom, dateTo, reviewStatusFilter)
     return {
       success: true,
       data,

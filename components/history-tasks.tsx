@@ -60,6 +60,7 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
   const [promisedLandFilter, setPromisedLandFilter] = useState<number | null>(null)
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
+  const [reviewStatusFilter, setReviewStatusFilter] = useState<'approved' | 'failed' | null>(null)
   const [chargeList, setChargeList] = useState<string[]>([])
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 50
@@ -74,7 +75,8 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
         chargeFilter || undefined,
         promisedLandFilter !== null ? promisedLandFilter : undefined,
         dateFrom || undefined,
-        dateTo || undefined
+        dateTo || undefined,
+        reviewStatusFilter || undefined
       )
       if (result.success) {
         setHistoryData(result.data)
@@ -126,7 +128,7 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
     loadHistoryData()
     loadStatistics()
     loadChargeList()
-  }, [chargeFilter, promisedLandFilter, dateFrom, dateTo])
+  }, [chargeFilter, promisedLandFilter, dateFrom, dateTo, reviewStatusFilter])
 
   // 搜索功能
   const handleSearch = () => {
@@ -209,7 +211,15 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
 
       {/* 统计卡片 */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        <Card className="p-6">
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+            reviewStatusFilter === 'approved' ? 'ring-2 ring-chart-1 bg-chart-1/5' : ''
+          }`}
+          onClick={() => {
+            setReviewStatusFilter(reviewStatusFilter === 'approved' ? null : 'approved')
+            setCurrentPage(1)
+          }}
+        >
           <div className="flex items-center gap-4">
             <div className="p-3 bg-chart-1/10 rounded-lg">
               <CheckCircle className="h-6 w-6 text-chart-1" />
@@ -221,7 +231,15 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
           </div>
         </Card>
 
-        <Card className="p-6">
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+            reviewStatusFilter === 'failed' ? 'ring-2 ring-chart-2 bg-chart-2/5' : ''
+          }`}
+          onClick={() => {
+            setReviewStatusFilter(reviewStatusFilter === 'failed' ? null : 'failed')
+            setCurrentPage(1)
+          }}
+        >
           <div className="flex items-center gap-4">
             <div className="p-3 bg-chart-2/10 rounded-lg">
               <XCircle className="h-6 w-6 text-chart-2" />
@@ -300,60 +318,95 @@ export default function HistoryTasks({ chargeFilter: propChargeFilter }: History
               <tr>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">SKU货号</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">负责人</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成时可售天数</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成/失败时可售天数</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">方案</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成时间</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成时库存</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成时销量</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成/失败时间</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成/失败时库存</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成/失败时销量</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">完成/失败</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-foreground">备注</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading || isPending ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={9} className="px-6 py-8 text-center text-sm text-muted-foreground">
                     加载中...
                   </td>
                 </tr>
               ) : error ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-destructive">
+                  <td colSpan={9} className="px-6 py-8 text-center text-sm text-destructive">
                     数据加载失败，请查看上方错误提示
                   </td>
                 </tr>
               ) : historyData.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={9} className="px-6 py-8 text-center text-sm text-muted-foreground">
                     暂无历史任务数据
                   </td>
                 </tr>
               ) : (
-                paginatedData.map((record) => (
-                  <tr key={record.id} className="hover:bg-muted/30 transition-colors">
-                    <td className="px-6 py-4 text-sm font-mono text-foreground">{record.ware_sku}</td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">{record.charge || '-'}</td>
-                    <td className="px-6 py-4 text-sm text-foreground font-medium">
-                      {record.completed_sale_day !== null ? record.completed_sale_day : '-'}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-muted text-foreground">
-                        {getPromisedLandText(record.promised_land)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">
-                      {record.completed_at
-                        ? new Date(record.completed_at).toLocaleString('zh-CN', {
-                            year: 'numeric',
-                            month: '2-digit',
-                            day: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                        : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">{record.inventory_num}</td>
-                    <td className="px-6 py-4 text-sm text-muted-foreground">{record.sales_num}</td>
-                  </tr>
-                ))
+                paginatedData.map((record) => {
+                  // 根据 review_status 判断成功/失败
+                  const getStatusText = () => {
+                    if (record.review_status === 'approved') {
+                      return '成功'
+                    } else if (record.review_status === 'timeout') {
+                      return '失败'
+                    } else if (record.review_status === 'rejected') {
+                      return '失败'
+                    }
+                    return '-'
+                  }
+                  
+                  const getStatusColor = () => {
+                    if (record.review_status === 'approved') {
+                      return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                    } else if (record.review_status === 'rejected' || record.review_status === 'timeout') {
+                      return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                    }
+                    return 'bg-muted text-muted-foreground'
+                  }
+                  
+                  return (
+                    <tr key={record.id} className="hover:bg-muted/30 transition-colors">
+                      <td className="px-6 py-4 text-sm font-mono text-foreground">{record.ware_sku}</td>
+                      <td className="px-6 py-4 text-sm text-muted-foreground">{record.charge || '-'}</td>
+                      <td className="px-6 py-4 text-sm text-foreground font-medium">
+                        {record.completed_sale_day !== null ? record.completed_sale_day : '-'}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-muted text-foreground">
+                          {getPromisedLandText(record.promised_land)}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-muted-foreground">
+                        {record.completed_at
+                          ? new Date(record.completed_at).toLocaleString('zh-CN', {
+                              year: 'numeric',
+                              month: '2-digit',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : '-'}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-muted-foreground">{record.inventory_num}</td>
+                      <td className="px-6 py-4 text-sm text-muted-foreground">{record.sales_num}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getStatusColor()}`}>
+                          {getStatusText()}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-sm text-muted-foreground">
+                          {record.notes || '-'}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>

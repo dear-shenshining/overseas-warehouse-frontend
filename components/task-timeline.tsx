@@ -29,7 +29,7 @@ import {
   PaginationPrevious,
   PaginationEllipsis,
 } from "@/components/ui/pagination"
-import { fetchTaskData, fetchTaskStatistics, updateTaskPromisedLand, addTaskImageUrl, removeTaskImageUrl, confirmTaskCheck, confirmTaskReview, approveTask, rejectTask } from "@/app/actions/inventory"
+import { fetchTaskData, fetchTaskStatistics, updateTaskPromisedLand, updateTaskNotes, addTaskImageUrl, removeTaskImageUrl, confirmTaskCheck, confirmTaskReview, approveTask, rejectTask } from "@/app/actions/inventory"
 import { uploadImage, getWmimgToken, loginWmimg, setWmimgToken } from "@/app/actions/image-upload"
 import type { InventoryRecord } from "@/lib/inventory-data"
 import { getLabelName } from "@/lib/label-mapping"
@@ -64,6 +64,8 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
   const [rejectSku, setRejectSku] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState("")
   const [imagePreview, setImagePreview] = useState<{ sku: string; url: string } | null>(null)
+  const [editingNotes, setEditingNotes] = useState<{ sku: string; value: string } | null>(null)
+  const [updatingNotesSku, setUpdatingNotesSku] = useState<string | null>(null)
   const fileInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({})
   const pageSize = 50
 
@@ -631,6 +633,9 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">标识</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">方案</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">倒计时</th>
+                {(statusFilter === 'in_progress' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
+                  <th className="px-6 py-4 text-left text-sm font-medium text-foreground">备注</th>
+                )}
                 {statusFilter === 'in_progress' && (
                   <>
                     <th className="px-6 py-4 text-left text-sm font-medium text-foreground">上传图片</th>
@@ -640,6 +645,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                 )}
                 {statusFilter === 'checking' && (
                   <>
+                    <th className="px-6 py-4 text-left text-sm font-medium text-foreground">打回理由</th>
                     <th className="px-6 py-4 text-left text-sm font-medium text-foreground">上传图片</th>
                     <th className="px-6 py-4 text-left text-sm font-medium text-foreground">图片</th>
                     <th className="px-6 py-4 text-left text-sm font-medium text-foreground">确定</th>
@@ -657,9 +663,9 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
               {loading || isPending ? (
                 <tr>
                   <td colSpan={
-                    statusFilter === 'in_progress' ? 11 : 
-                    statusFilter === 'checking' ? 11 :
-                    statusFilter === 'reviewing' ? 10 : 8
+                    statusFilter === 'in_progress' ? 12 : 
+                    statusFilter === 'checking' ? 13 :
+                    statusFilter === 'reviewing' ? 11 : 8
                   } className="px-6 py-8 text-center text-sm text-muted-foreground">
                     加载中...
                   </td>
@@ -667,9 +673,9 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
               ) : error ? (
                 <tr>
                   <td colSpan={
-                    statusFilter === 'in_progress' ? 11 : 
-                    statusFilter === 'checking' ? 11 :
-                    statusFilter === 'reviewing' ? 10 : 8
+                    statusFilter === 'in_progress' ? 12 : 
+                    statusFilter === 'checking' ? 13 :
+                    statusFilter === 'reviewing' ? 11 : 8
                   } className="px-6 py-8 text-center text-sm text-destructive">
                     数据加载失败，请查看上方错误提示
                   </td>
@@ -677,9 +683,9 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
               ) : taskData.length === 0 ? (
                 <tr>
                   <td colSpan={
-                    statusFilter === 'in_progress' ? 11 : 
-                    statusFilter === 'checking' ? 11 :
-                    statusFilter === 'reviewing' ? 10 : 8
+                    statusFilter === 'in_progress' ? 12 : 
+                    statusFilter === 'checking' ? 13 :
+                    statusFilter === 'reviewing' ? 11 : 8
                   } className="px-6 py-8 text-center text-sm text-muted-foreground">
                     暂无数据
                   </td>
@@ -742,6 +748,52 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                       <td className="px-6 py-4 text-sm text-muted-foreground">
                         {formatCountDown(record.count_down)}
                       </td>
+                      {(statusFilter === 'in_progress' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
+                        <td className="px-6 py-4">
+                          {editingNotes?.sku === record.ware_sku ? (
+                            <Input
+                              value={editingNotes.value}
+                              onChange={(e) => setEditingNotes({...editingNotes, value: e.target.value})}
+                              onBlur={async () => {
+                                if (editingNotes) {
+                                  setUpdatingNotesSku(record.ware_sku)
+                                  const result = await updateTaskNotes(record.ware_sku, editingNotes.value || null)
+                                  if (result.success) {
+                                    // 更新本地数据
+                                    setTaskData((prev) =>
+                                      prev.map((item) =>
+                                        item.ware_sku === record.ware_sku
+                                          ? { ...item, notes: editingNotes.value || null }
+                                          : item
+                                      )
+                                    )
+                                    setEditingNotes(null)
+                                    toast.success('备注已更新')
+                                  } else {
+                                    toast.error('更新备注失败：' + (result.error || '未知错误'))
+                                  }
+                                  setUpdatingNotesSku(null)
+                                }
+                              }}
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.currentTarget.blur()
+                                }
+                              }}
+                              className="w-full min-w-[200px]"
+                              autoFocus
+                              disabled={updatingNotesSku === record.ware_sku}
+                            />
+                          ) : (
+                            <span 
+                              className="text-sm text-muted-foreground cursor-pointer hover:text-foreground"
+                              onClick={() => setEditingNotes({sku: record.ware_sku, value: record.notes || ''})}
+                            >
+                              {record.notes || '-'}
+                            </span>
+                          )}
+                        </td>
+                      )}
                       {statusFilter === 'in_progress' && (
                         <>
                           <td className="px-6 py-4">
@@ -838,6 +890,11 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                       {statusFilter === 'checking' && (
                         <>
                           <td className="px-6 py-4">
+                            <span className="text-sm text-muted-foreground">
+                              {record.reject_reason || '-'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4">
                             <div className="flex items-center gap-2">
                               <input
                                 ref={(el) => {
@@ -872,49 +929,47 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                             </div>
                           </td>
                           <td className="px-6 py-4">
-                            {record.image_urls && record.image_urls.length > 0 ? (
-                              <div className="flex flex-wrap gap-2">
-                                {record.image_urls.map((imageUrl, idx) => (
-                                  <div key={idx} className="relative group">
-                                    <img
-                                      src={imageUrl}
-                                      alt={`${record.ware_sku}-${idx}`}
-                                      className="w-16 h-16 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity border border-border"
-                                      onClick={() => setImagePreview({ sku: record.ware_sku, url: imageUrl })}
-                                    />
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        const result = await removeTaskImageUrl(record.ware_sku, imageUrl)
-                                        if (result.success) {
-                                          // 更新本地数据
-                                          setTaskData((prev) =>
-                                            prev.map((item) =>
-                                              item.ware_sku === record.ware_sku
-                                                ? {
-                                                    ...item,
-                                                    image_urls: (item.image_urls || []).filter(url => url !== imageUrl)
-                                                  }
-                                                : item
-                                            )
-                                          )
-                                          toast.success('图片已删除')
-                                        } else {
-                                          toast.error('删除图片失败：' + (result.error || '未知错误'))
-                                        }
-                                      }}
-                                      className="absolute -top-2 -right-2 h-6 w-6 p-0 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 opacity-0 group-hover:opacity-100 transition-opacity"
-                                    >
-                                      <X className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-sm text-muted-foreground">-</span>
-                            )}
+                            {(() => {
+                              // 确保 image_urls 是数组格式
+                              let imageUrls: string[] = []
+                              if (record.image_urls) {
+                                if (Array.isArray(record.image_urls)) {
+                                  imageUrls = record.image_urls
+                                } else if (typeof record.image_urls === 'string') {
+                                  try {
+                                    imageUrls = JSON.parse(record.image_urls)
+                                    if (!Array.isArray(imageUrls)) {
+                                      imageUrls = []
+                                    }
+                                  } catch (e) {
+                                    console.warn('解析 image_urls 失败:', record.image_urls)
+                                    imageUrls = []
+                                  }
+                                }
+                              }
+                              
+                              return imageUrls.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {imageUrls.map((imageUrl: string, idx: number) => (
+                                    <div key={idx} className="relative group">
+                                      <img
+                                        src={imageUrl}
+                                        alt={`${record.ware_sku}-${idx}`}
+                                        className="w-16 h-16 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity border border-border"
+                                        onClick={() => setImagePreview({ sku: record.ware_sku, url: imageUrl })}
+                                        onError={(e) => {
+                                          console.error('图片加载失败:', imageUrl)
+                                          e.currentTarget.style.display = 'none'
+                                        }}
+                                      />
+                                      {/* 完成检查状态下不显示删除按钮 */}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-sm text-muted-foreground">-</span>
+                              )
+                            })()}
                           </td>
                           <td className="px-6 py-4">
                             <Button
