@@ -70,16 +70,38 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
   const pageSize = 50
 
   // 方案映射
-  const getPromisedLandText = (value: number | undefined): string => {
+  const getPromisedLandText = (value: number | undefined, failureCount?: number): string => {
     switch (value) {
       case 1:
         return '退回厂家'
       case 2:
-        return '降价清仓'
+        // 根据失败次数显示不同的降价清仓选项
+        if (failureCount === 0) {
+          return '降价清仓（20%）'
+        } else if (failureCount === 1) {
+          return '降价清仓（10%）'
+        } else if (failureCount === 2) {
+          return '降价清仓（0%）'
+        } else {
+          return '降价清仓'
+        }
       case 3:
         return '打处理'
       default:
         return '未选择方案'
+    }
+  }
+  
+  // 获取降价清仓选项文本（用于下拉选择）
+  const getPriceReductionOptionText = (failureCount: number): string => {
+    if (failureCount === 0) {
+      return '降价清仓（20%）'
+    } else if (failureCount === 1) {
+      return '降价清仓（10%）'
+    } else if (failureCount === 2) {
+      return '降价清仓（0%）'
+    } else {
+      return '降价清仓（已失败3次，不可选）'
     }
   }
 
@@ -116,12 +138,9 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
     try {
       const result = await updateTaskPromisedLand(wareSku, promisedLand)
       if (result.success) {
-        // 更新本地数据
-        setTaskData((prev) =>
-          prev.map((item) =>
-            item.ware_sku === wareSku ? { ...item, promised_land: promisedLand } : item
-          )
-        )
+        // 重新加载数据以获取最新的失败次数
+        await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
+        toast.success('方案已更新')
       } else {
         console.error('更新方案失败:', result.error)
         toast.error('更新方案失败：' + (result.error || '未知错误'))
@@ -722,24 +741,40 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                         {(statusFilter === 'checking' || statusFilter === 'reviewing') ? (
                           // 完成检查和审核中：显示固定方案（从promised_land_snapshot读取）
                           <span className="text-sm text-foreground">
-                            {getPromisedLandText(record.promised_land_snapshot ?? record.promised_land)}
+                            {getPromisedLandText(record.promised_land_snapshot ?? record.promised_land, record.price_reduction_failure_count)}
                           </span>
                         ) : (
                           // 其他状态：可编辑
                           <Select
                             value={record.promised_land?.toString() || '0'}
-                            onValueChange={(value) => handlePromisedLandChange(record.ware_sku, value)}
+                            onValueChange={async (value) => {
+                              const newValue = parseInt(value) as 0 | 1 | 2 | 3
+                              setUpdatingSku(record.ware_sku)
+                              const result = await updateTaskPromisedLand(record.ware_sku, newValue)
+                              if (result.success) {
+                                await loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
+                                toast.success('方案已更新')
+                              } else {
+                                toast.error('更新方案失败：' + (result.error || '未知错误'))
+                              }
+                              setUpdatingSku(null)
+                            }}
                             disabled={updatingSku === record.ware_sku}
                           >
                             <SelectTrigger className="w-[140px] h-8 text-sm">
                               <SelectValue>
-                                {getPromisedLandText(record.promised_land)}
+                                {getPromisedLandText(record.promised_land, record.price_reduction_failure_count)}
                               </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="0">未选择方案</SelectItem>
                               <SelectItem value="1">退回厂家</SelectItem>
-                              <SelectItem value="2">降价清仓</SelectItem>
+                              <SelectItem 
+                                value="2" 
+                                disabled={(record.price_reduction_failure_count || 0) >= 3}
+                              >
+                                {getPriceReductionOptionText(record.price_reduction_failure_count || 0)}
+                              </SelectItem>
                               <SelectItem value="3">打处理</SelectItem>
                             </SelectContent>
                           </Select>

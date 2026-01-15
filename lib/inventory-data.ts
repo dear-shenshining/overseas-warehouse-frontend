@@ -56,6 +56,7 @@ export interface InventoryRecord {
   image_urls?: string[] // 任务相关图片URL数组
   notes?: string | null // 任务备注
   reject_reason?: string | null // 打回理由
+  price_reduction_failure_count?: number // 降价清仓失败次数：0=未失败，1=失败1次，2=失败2次，3=失败3次
   created_at?: string
   updated_at?: string
 }
@@ -956,7 +957,7 @@ export async function getTaskData(
     // PostgreSQL: EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 计算小时差
     // 只查询任务记录：task_status IS NOT NULL 或 promised_land IS NOT NULL
     let sql =
-      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, promised_land_snapshot, task_status, image_urls, notes, reject_reason, CASE WHEN promised_land = 0 OR promised_land IS NULL THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END as count_down, created_at, updated_at FROM task WHERE (task_status IS NOT NULL OR promised_land IS NOT NULL)'
+      'SELECT id, ware_sku, inventory_num, sales_num, sale_day, charge, label, promised_land, promised_land_snapshot, task_status, image_urls, notes, reject_reason, price_reduction_failure_count, CASE WHEN promised_land = 0 OR promised_land IS NULL THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 END as count_down, created_at, updated_at FROM task WHERE (task_status IS NOT NULL OR promised_land IS NOT NULL)'
     const params: any[] = []
     let paramIndex = 1
 
@@ -1832,9 +1833,9 @@ export async function rejectTask(
       }
     }
     
-    // 检查任务是否在审核中状态
-    const taskResult = await query<{ task_status: number }>(
-      'SELECT task_status FROM task WHERE ware_sku = $1',
+    // 检查任务是否在审核中状态，并获取当前方案和失败次数
+    const taskResult = await query<{ task_status: number; promised_land: number; price_reduction_failure_count: number }>(
+      'SELECT task_status, promised_land, price_reduction_failure_count FROM task WHERE ware_sku = $1',
       [wareSku]
     )
     
@@ -1852,17 +1853,25 @@ export async function rejectTask(
       }
     }
     
+    // 如果是降价清仓方案被打回，增加失败次数（最多3次）
+    let newFailureCount = taskResult[0].price_reduction_failure_count || 0
+    if (taskResult[0].promised_land === 2) {
+      newFailureCount = Math.min(newFailureCount + 1, 3)
+    }
+    
     // 更新任务状态：task_status = 4（回到完成检查）
     // 记录打回理由和审核状态
+    // 如果是降价清仓方案，增加失败次数
     await execute(
       `UPDATE task SET
         task_status = 4,
         review_status = 'rejected',
         reject_reason = $1,
+        price_reduction_failure_count = $2,
         reviewed_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
-      WHERE ware_sku = $2`,
-      [rejectReason.trim(), wareSku]
+      WHERE ware_sku = $3`,
+      [rejectReason.trim(), newFailureCount, wareSku]
     )
     
     return { success: true }
