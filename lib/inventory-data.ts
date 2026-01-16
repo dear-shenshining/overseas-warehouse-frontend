@@ -493,6 +493,7 @@ export async function updateTaskCountDown(): Promise<{ success: boolean; error?:
           reviewed_at = NULL,
           review_status = NULL,
           reject_reason = NULL,
+          created_at = CURRENT_TIMESTAMP,
           updated_at = CURRENT_TIMESTAMP
         WHERE ware_sku IN (${placeholders})
         AND (task_status IS NOT NULL OR promised_land IS NOT NULL)`,

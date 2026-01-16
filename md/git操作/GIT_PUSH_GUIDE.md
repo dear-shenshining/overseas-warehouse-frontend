@@ -571,10 +571,10 @@ git push origin main
 git status
 
 # 2. 添加所有文件
-git add .
+git add .                
 
 # 3. 首次提交
-git commit -m "把比例数据做到展示框里面"
+git commit -m "海外仓爬虫默认展示本月数据"
 
 # 4. 创建 main 分支（如果还没有）
 git checkout -b main

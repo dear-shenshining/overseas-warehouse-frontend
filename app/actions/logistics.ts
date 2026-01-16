@@ -230,11 +230,12 @@ export async function updateLogisticsField(
 }
 
 /**
- * 批量查询货运单号
+ * 批量查询货运单号（优先查转单号，没有转单号才查原始单号）
  */
 export async function batchSearchLogistics(searchNums: string[]) {
   try {
     const { query } = await import('@/lib/db')
+    const { getLogisticsFields } = await import('@/lib/logistics-field-cache')
     
     if (searchNums.length === 0) {
       return {
@@ -245,8 +246,17 @@ export async function batchSearchLogistics(searchNums: string[]) {
       }
     }
 
+    // 检查转单号字段是否存在
+    const { hasTransferNum } = await getLogisticsFields()
+    
     const placeholders = searchNums.map((_, i) => `$${i + 1}`).join(',')
-    const sql = `SELECT search_num FROM post_searchs WHERE search_num IN (${placeholders})`
+    // 如果有转单号字段，优先查转单号，没有转单号才查原始单号
+    let sql: string
+    if (hasTransferNum) {
+      sql = `SELECT DISTINCT search_num FROM post_searchs WHERE transfer_num IN (${placeholders}) OR ((transfer_num IS NULL OR transfer_num = '') AND search_num IN (${placeholders}))`
+    } else {
+      sql = `SELECT search_num FROM post_searchs WHERE search_num IN (${placeholders})`
+    }
     const results = await query<{ search_num: string }>(sql, searchNums)
     
     const found = results.map(r => r.search_num)

@@ -295,7 +295,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       // 如果没有输入，直接加载所有数据（使用更新后的日期）
       startTransition(() => {
         loadLogisticsData(undefined, statusFilter, 1)
-        loadStatistics()
+    loadStatistics()
       })
       return
     }
@@ -305,7 +305,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     if (searchNumbers.length === 1) {
       // 单个单号，直接搜索
       setActualSearchNumbers(searchNumbers) // 保存搜索的单号
-      startTransition(() => {
+    startTransition(() => {
         loadLogisticsData(searchNumbers[0], statusFilter, 1)
         loadStatistics()
       })
@@ -556,8 +556,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
     // 只有第一次调用（没有进度）时才重置结果和更新时间
     if (progress.lastProcessedId === 0) {
-      setUpdateResult(null)
-      onLastUpdateTimeChange?.(null)
+    setUpdateResult(null)
+    onLastUpdateTimeChange?.(null)
     }
 
     // 更新组件状态
@@ -568,10 +568,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
     try {
       // 显示开始处理的提示
       if (progress.lastProcessedId === 0) {
-        setUpdateResult({
-          success: true,
+      setUpdateResult({
+        success: true,
           message: '正在启动爬虫...',
-        })
+      })
       } else {
         setUpdateResult({
           success: true,
@@ -663,8 +663,8 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
             const completionTime = new Date()
             setLastUpdateTime(completionTime)
             onLastUpdateTimeChange?.(completionTime)
-            setUpdateResult({
-              success: true,
+        setUpdateResult({
+          success: true,
               message: `✅ 全部处理完成！总计处理 ${progress.totalProcessed} 个，成功 ${progress.totalSuccess} 个，失败 ${progress.totalFailed} 个，跳过 ${progress.totalSkipped} 个，执行了 ${progress.roundCount} 轮`,
             })
             // 清除进度
@@ -674,16 +674,16 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           } else if (hasMore) {
             // 🔄 还有更多待处理的追踪号，继续下一轮
             console.log(`ℹ️ 还有待处理的追踪号，1 秒后自动继续第 ${progress.roundCount + 1} 轮...`)
-            await new Promise((resolve) => setTimeout(resolve, 1000))
+          await new Promise((resolve) => setTimeout(resolve, 1000))
             continue
-          } else {
+        } else {
             // ⚠️ 数据状态不一致：lastProcessedId < maxId 但 hasMore = false
             console.log(`⚠️ 数据状态不一致：hasMore=${hasMore}, lastProcessedId=${progress.lastProcessedId}, maxId=${progress.maxId}`)
-            const completionTime = new Date()
-            setLastUpdateTime(completionTime)
-            onLastUpdateTimeChange?.(completionTime)
-            setUpdateResult({
-              success: true,
+          const completionTime = new Date()
+          setLastUpdateTime(completionTime)
+          onLastUpdateTimeChange?.(completionTime)
+          setUpdateResult({
+            success: true,
               message: `⚠️ 处理完成（检测到数据状态不一致，已安全停止）。总计处理 ${progress.totalProcessed} 个，成功 ${progress.totalSuccess} 个，失败 ${progress.totalFailed} 个，跳过 ${progress.totalSkipped} 个，执行了 ${progress.roundCount} 轮`,
             })
             // 清除进度
@@ -825,9 +825,9 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
       }
 
       if (result.data.length === 0) {
-        alert("没有数据可导出")
-        return
-      }
+      alert("没有数据可导出")
+      return
+    }
 
       // 准备导出数据（订单号放在第一列）
       const exportData = result.data.map((record) => ({
@@ -951,15 +951,15 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
         <div className="flex flex-wrap items-center gap-3">
           {/* 发货单号查询 */}
           <div className="flex-1 min-w-[200px] relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
               placeholder="输入发货单号查询（支持多个，用空格、逗号、换行分隔）..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyPress={handleKeyPress}
-              className="pl-10"
-            />
-          </div>
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyPress={handleKeyPress}
+                className="pl-10"
+              />
+            </div>
           
           {/* 日期范围 */}
           <div className="w-[280px]">
@@ -975,10 +975,10 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           </div>
           
           {/* 搜索按钮 */}
-          <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
-            <Search className="h-4 w-4" />
-            {isPending ? "搜索中..." : "搜索"}
-          </Button>
+            <Button onClick={handleSearch} className="gap-2" disabled={isPending}>
+              <Search className="h-4 w-4" />
+              {isPending ? "搜索中..." : "搜索"}
+            </Button>
           
           {/* 导出数据 */}
           <Button onClick={handleExport} className="gap-2">
@@ -1096,7 +1096,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           </div>
         </Card>
 
-        <Card
+        <Card 
           className={`p-6 cursor-pointer transition-all hover:shadow-md flex-1 ${
             statusFilter === 'online_abnormal' ? 'ring-2 ring-chart-4 bg-chart-4/5' : ''
           }`}
@@ -1355,7 +1355,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                   const isEditing = editingField?.id === record.id
                   
                   return (
-                    <tr key={`${record.search_num}-${index}`} className="hover:bg-muted/30 transition-colors">
+                  <tr key={`${record.search_num}-${index}`} className="hover:bg-muted/30 transition-colors">
                       {/* 订单号 */}
                       <td className="px-6 py-4">
                         {isEditing && editingField?.field === 'order_num' ? (
@@ -1382,7 +1382,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                       </td>
                       
                       {/* 发货单号 */}
-                      <td className="px-6 py-4 text-sm font-mono text-foreground">{record.search_num}</td>
+                    <td className="px-6 py-4 text-sm font-mono text-foreground">{record.search_num}</td>
                       
                       {/* 转单号 */}
                       <td className="px-6 py-4">
@@ -1417,9 +1417,9 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                       </td>
                       
                       {/* 状态 */}
-                      <td className="px-6 py-4">
-                        <span
-                          className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                    <td className="px-6 py-4">
+                      <span
+                        className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
                             displayState === "Final delivery"
                               ? "bg-background border border-border text-foreground"
                               : displayState === "Returned to Sender" || 
@@ -1433,21 +1433,21 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                                   displayState === "未上网"
                                   ? "bg-destructive/10 text-destructive"
                                   : "bg-chart-2/10 text-chart-2"
-                          }`}
-                        >
+                        }`}
+                      >
                           {getStatusLabel(displayState)}
-                        </span>
-                      </td>
+                      </span>
+                    </td>
                       
                       {/* 发货日期 */}
-                      <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {record.Ship_date ? new Date(record.Ship_date).toLocaleDateString('zh-CN') : '-'}
-                      </td>
+                    <td className="px-6 py-4 text-sm text-muted-foreground">
+                      {record.Ship_date ? new Date(record.Ship_date).toLocaleDateString('zh-CN') : '-'}
+                    </td>
                       
                       {/* 发货渠道 */}
-                      <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {record.channel || '-'}
-                      </td>
+                    <td className="px-6 py-4 text-sm text-muted-foreground">
+                      {record.channel || '-'}
+                    </td>
                       
                       {/* 备注 */}
                       <td className="px-6 py-4">
@@ -1473,7 +1473,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                           </span>
                         )}
                       </td>
-                    </tr>
+                  </tr>
                   )
                 })
               )}
@@ -1503,7 +1503,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                     </PaginationItem>
                     {(() => {
                       const pages: (number | 'ellipsis')[] = []
-
+                      
                       if (totalPages <= 7) {
                         // 如果总页数少于等于7页，显示所有页码
                         for (let i = 1; i <= totalPages; i++) {
@@ -1512,7 +1512,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                       } else {
                         // 总是显示第一页
                         pages.push(1)
-
+                        
                         if (currentPage <= 3) {
                           // 当前页在前3页
                           for (let i = 2; i <= 4; i++) {
@@ -1536,7 +1536,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
                           pages.push(totalPages)
                         }
                       }
-
+                      
                       return pages.map((page, index) => {
                         if (page === 'ellipsis') {
                           return (

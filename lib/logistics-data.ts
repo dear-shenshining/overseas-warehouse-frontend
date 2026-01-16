@@ -110,7 +110,15 @@ export async function getLogisticsData(
     const searchNums = searchNum.split(',').map(s => s.trim()).filter(s => s)
     if (searchNums.length > 0) {
       const placeholders = searchNums.map((_, i) => `$${paramIndex + i}`).join(',')
-      sql += ` AND p.search_num IN (${placeholders})`
+      // 如果有转单号字段，优先查转单号，没有转单号才查原始单号
+      if (hasTransferNum) {
+        sql += ` AND (
+          p.transfer_num IN (${placeholders})
+          OR (p.transfer_num IS NULL OR p.transfer_num = '') AND p.search_num IN (${placeholders})
+        )`
+      } else {
+        sql += ` AND p.search_num IN (${placeholders})`
+      }
       params.push(...searchNums)
       paramIndex += searchNums.length
     }
@@ -213,7 +221,15 @@ export async function getLogisticsData(
     const searchNums = searchNum.split(',').map(s => s.trim()).filter(s => s)
     if (searchNums.length > 0) {
       const placeholders = searchNums.map((_, i) => `$${countParamIndex + i}`).join(',')
-      countSql += ` AND p.search_num IN (${placeholders})`
+      // 如果有转单号字段，优先查转单号，没有转单号才查原始单号
+      if (hasTransferNum) {
+        countSql += ` AND (
+          p.transfer_num IN (${placeholders})
+          OR (p.transfer_num IS NULL OR p.transfer_num = '') AND p.search_num IN (${placeholders})
+        )`
+      } else {
+        countSql += ` AND p.search_num IN (${placeholders})`
+      }
       countParams.push(...searchNums)
       countParamIndex += searchNums.length
     }
