@@ -362,6 +362,24 @@ export async function fetchInventoryStatistics(chargeFilter?: string) {
  * 从 inventory 表同步 label 包含 2 或 4 的记录到 task 表
  * @returns 刷新结果
  */
+/**
+ * 更新任务倒计时并处理超时任务
+ * 页面加载时自动调用，将超时任务流转到历史表
+ */
+export async function updateTaskCountDownAction(): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { updateTaskCountDown } = await import('@/lib/inventory-data')
+    const result = await updateTaskCountDown()
+    return result
+  } catch (error: any) {
+    console.error('更新任务倒计时失败:', error)
+    return {
+      success: false,
+      error: error.message || '更新失败',
+    }
+  }
+}
+
 export async function refreshTaskTable() {
   try {
     const { syncInventoryToTask, updateTaskCountDown } = await import('@/lib/inventory-data')
@@ -400,12 +418,13 @@ export async function refreshTaskTable() {
 export async function fetchTaskData(
   searchSku?: string,
   labelFilter?: 'over_15_days' | 'has_inventory_no_sales',
-  statusFilter?: 'no_solution' | 'in_progress' | 'checking' | 'reviewing' | 'timeout',
-  chargeFilter?: string
+  statusFilter?: 'no_solution' | 'warehouse_tasks' | 'operation_tasks' | 'checking' | 'reviewing' | 'timeout',
+  chargeFilter?: string,
+  skipCountDownUpdate?: boolean // 是否跳过倒计时更新
 ) {
   try {
     const { getTaskData } = await import('@/lib/inventory-data')
-    const data = await getTaskData(searchSku, labelFilter, statusFilter, chargeFilter)
+    const data = await getTaskData(searchSku, labelFilter, statusFilter, chargeFilter, skipCountDownUpdate)
     return {
       success: true,
       data,

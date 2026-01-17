@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useTransition, useRef } from "react"
+import { useState, useEffect, useTransition, useRef, useCallback } from "react"
 import { Search, Calendar, TrendingDown, Clock, AlertCircle, CheckCircle, Upload, Image as ImageIcon, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -29,7 +29,7 @@ import {
   PaginationPrevious,
   PaginationEllipsis,
 } from "@/components/ui/pagination"
-import { fetchTaskData, fetchTaskStatistics, updateTaskPromisedLand, updateTaskNotes, addTaskImageUrl, removeTaskImageUrl, confirmTaskCheck, confirmTaskReview, approveTask, rejectTask } from "@/app/actions/inventory"
+import { fetchTaskData, fetchTaskStatistics, updateTaskPromisedLand, updateTaskNotes, addTaskImageUrl, removeTaskImageUrl, confirmTaskCheck, confirmTaskReview, approveTask, rejectTask, updateTaskCountDownAction } from "@/app/actions/inventory"
 import { uploadImage, getWmimgToken, loginWmimg, setWmimgToken } from "@/app/actions/image-upload"
 import type { InventoryRecord } from "@/lib/inventory-data"
 import { getLabelName } from "@/lib/label-mapping"
@@ -53,13 +53,15 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
     over_15_days: 0,
     has_inventory_no_sales: 0,
     no_solution: 0,
-    in_progress: 0,
+    warehouse_tasks: 0,
+    operation_tasks: 0,
+    in_progress: 0, // 保留用于兼容
     checking: 0,
     reviewing: 0,
   })
   const [labelFilter, setLabelFilter] = useState<'over_15_days' | 'has_inventory_no_sales' | null>(null)
-  const [statusFilter, setStatusFilter] = useState<'no_solution' | 'in_progress' | 'checking' | 'reviewing' | null>(null)
-  const [promisedLandFilter, setPromisedLandFilter] = useState<number | null>(null) // 方案筛选：0=未选择，1=退回厂家，2=降价清仓，3=打处理
+  const [statusFilter, setStatusFilter] = useState<'no_solution' | 'warehouse_tasks' | 'operation_tasks' | 'checking' | 'reviewing' | null>(null)
+  const [promisedLandFilter, setPromisedLandFilter] = useState<number | null>(null) // 方案筛选：0=未选择，1=退回厂家，2=降价清仓，3=正常售卖
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
   const [rejectSku, setRejectSku] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState("")
@@ -67,6 +69,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
   const [editingNotes, setEditingNotes] = useState<{ sku: string; value: string } | null>(null)
   const [updatingNotesSku, setUpdatingNotesSku] = useState<string | null>(null)
   const fileInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({})
+  const isInitialMount = useRef(true)
   const pageSize = 50
 
   // 方案映射
@@ -86,7 +89,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
           return '降价清仓'
         }
       case 3:
-        return '打处理'
+        return '正常售卖'
       default:
         return '未选择方案'
     }
@@ -145,8 +148,12 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
           )
         )
         toast.success('方案已更新')
-        // 后台重新加载数据以获取最新的失败次数和倒计时（不阻塞UI）
-        loadTaskData(searchQuery || undefined, labelFilter, statusFilter).catch(console.error)
+        // 方案变更会影响任务状态（task_status），需要更新数据和统计
+        // 并行加载数据和统计以确保展示卡数据同步更新
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter),
+          loadStatistics()
+        ]).catch(console.error)
       } else {
         console.error('更新方案失败:', result.error)
         toast.error('更新方案失败：' + (result.error || '未知错误'))
@@ -262,7 +269,8 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
   const loadTaskData = async (
     searchSku?: string,
     labelFilterType?: 'over_15_days' | 'has_inventory_no_sales' | null,
-    statusFilterType?: 'no_solution' | 'in_progress' | 'checking' | 'reviewing' | null
+    statusFilterType?: 'no_solution' | 'warehouse_tasks' | 'operation_tasks' | 'checking' | 'reviewing' | null,
+    skipCountDownUpdate?: boolean // 是否跳过倒计时更新（切换筛选时不需要更新数据库）
   ) => {
     try {
       setLoading(true)
@@ -271,7 +279,8 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
         searchSku,
         labelFilterType || undefined,
         statusFilterType || undefined,
-        chargeFilter
+        chargeFilter,
+        skipCountDownUpdate // 传递跳过标志
       )
       if (result.success) {
         // 应用方案筛选
@@ -281,6 +290,16 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
             const promisedLand = statusFilterType === 'checking' || statusFilterType === 'reviewing' 
               ? (item.promised_land_snapshot ?? item.promised_land)
               : item.promised_land
+            
+            // 根据筛选类型限制方案选项
+            if (statusFilterType === 'warehouse_tasks') {
+              // 仓库任务只能选择退回厂家（promised_land = 1）
+              return promisedLand === 1 && (promisedLandFilter === null || promisedLand === promisedLandFilter)
+            } else if (statusFilterType === 'operation_tasks') {
+              // 运营任务只能选择降价清仓（promised_land = 2）或正常售卖（promised_land = 3）
+              return (promisedLand === 2 || promisedLand === 3) && (promisedLandFilter === null || promisedLand === promisedLandFilter)
+            }
+            
             return promisedLand === promisedLandFilter
           })
         }
@@ -310,7 +329,9 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
           over_15_days: data.over_15_days || 0,
           has_inventory_no_sales: data.has_inventory_no_sales || 0,
           no_solution: data.no_solution || 0,
-          in_progress: data.in_progress || 0,
+          warehouse_tasks: data.warehouse_tasks || 0,
+          operation_tasks: data.operation_tasks || 0,
+          in_progress: data.in_progress || 0, // 保留用于兼容
           checking: data.checking || 0,
           reviewing: data.reviewing || 0,
         })
@@ -330,10 +351,11 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
       setLabelFilter(filterType)
     }
     setCurrentPage(1) // 重置到第一页
+    // 不在这里加载数据，让 useEffect 统一处理，避免重复加载
   }
 
   // 处理状态卡片点击
-  const handleStatusCardClick = (filterType: 'no_solution' | 'in_progress' | 'checking' | 'reviewing' | null) => {
+  const handleStatusCardClick = (filterType: 'no_solution' | 'warehouse_tasks' | 'operation_tasks' | 'checking' | 'reviewing' | null) => {
     // 如果点击的是当前已选中的卡片，则取消筛选
     if (statusFilter === filterType) {
       setStatusFilter(null)
@@ -341,9 +363,12 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
       setStatusFilter(filterType)
     }
     setCurrentPage(1) // 重置到第一页
+    // 切换状态时重置方案筛选
+    setPromisedLandFilter(null)
+    // 不在这里加载数据，让 useEffect 统一处理，避免重复加载
   }
 
-  // 处理确认完成检查（任务正在进行中点击确定）
+  // 处理确认完成检查（仓库任务或运营任务点击确定）
   const handleConfirmCheck = async (wareSku: string) => {
     try {
       const result = await confirmTaskCheck(wareSku)
@@ -454,8 +479,31 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
 
   // 初始加载和筛选变化时重新加载
   useEffect(() => {
-    loadTaskData(searchQuery || undefined, labelFilter, statusFilter)
-    loadStatistics()
+    // 页面加载时自动更新任务倒计时并处理超时任务
+    // 然后再加载数据和统计
+    const initializeData = async () => {
+      // 首次加载时才更新倒计时（处理超时任务流转到历史表）
+      if (isInitialMount.current) {
+        await updateTaskCountDownAction().catch((error) => {
+          console.error('更新任务倒计时失败:', error)
+          // 即使失败也继续加载数据
+        })
+        isInitialMount.current = false
+        // 首次加载：需要更新倒计时
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter, false),
+          loadStatistics()
+        ]).catch(console.error)
+      } else {
+        // 筛选变化：不需要更新倒计时，避免不必要的数据库操作和闪烁
+        await Promise.all([
+          loadTaskData(searchQuery || undefined, labelFilter, statusFilter, true),
+          loadStatistics()
+        ]).catch(console.error)
+      }
+    }
+    
+    initializeData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labelFilter, statusFilter, chargeFilter, promisedLandFilter])
 
@@ -494,8 +542,8 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
             className="pl-10"
           />
         </div>
-        {/* 方案筛选器（仅在任务正在进行中、完成检查、审核中显示） */}
-        {(statusFilter === 'in_progress' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
+        {/* 方案筛选器（仅在仓库任务、运营任务、完成检查、审核中显示） */}
+        {(statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
           <Select
             value={promisedLandFilter !== null ? promisedLandFilter.toString() : 'all'}
             onValueChange={(value) => {
@@ -508,10 +556,20 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部方案</SelectItem>
-              <SelectItem value="0">未选择方案</SelectItem>
-              <SelectItem value="1">退回厂家</SelectItem>
-              <SelectItem value="2">降价清仓</SelectItem>
-              <SelectItem value="3">打处理</SelectItem>
+              {statusFilter === 'warehouse_tasks' && <SelectItem value="1">退回厂家</SelectItem>}
+              {statusFilter === 'operation_tasks' && (
+                <>
+                  <SelectItem value="2">降价清仓</SelectItem>
+                  <SelectItem value="3">正常售卖</SelectItem>
+                </>
+              )}
+              {(statusFilter === 'checking' || statusFilter === 'reviewing') && (
+                <>
+                  <SelectItem value="1">退回厂家</SelectItem>
+                  <SelectItem value="2">降价清仓</SelectItem>
+                  <SelectItem value="3">正常售卖</SelectItem>
+                </>
+              )}
             </SelectContent>
           </Select>
         )}
@@ -538,7 +596,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
       )}
 
       {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
         <Card
           className={`p-6 cursor-pointer transition-all hover:shadow-md ${
             labelFilter === 'over_15_days' ? 'ring-2 ring-chart-1 bg-chart-1/5' : ''
@@ -592,30 +650,47 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
 
         <Card
           className={`p-6 cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'in_progress' ? 'ring-2 ring-chart-4 bg-chart-4/5' : ''
+            statusFilter === 'warehouse_tasks' ? 'ring-2 ring-chart-4 bg-chart-4/5' : ''
           }`}
-          onClick={() => handleStatusCardClick(statusFilter === 'in_progress' ? null : 'in_progress')}
+          onClick={() => handleStatusCardClick(statusFilter === 'warehouse_tasks' ? null : 'warehouse_tasks')}
         >
           <div className="flex items-center gap-4">
             <div className="p-3 bg-chart-4/10 rounded-lg">
               <Clock className="h-6 w-6 text-chart-4" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">任务正在进行中</p>
-              <p className="text-2xl font-semibold text-foreground">{statistics.in_progress}</p>
+              <p className="text-sm text-muted-foreground">仓库任务</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.warehouse_tasks}</p>
             </div>
           </div>
         </Card>
 
         <Card
           className={`p-6 cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'checking' ? 'ring-2 ring-chart-5 bg-chart-5/5' : ''
+            statusFilter === 'operation_tasks' ? 'ring-2 ring-chart-5 bg-chart-5/5' : ''
+          }`}
+          onClick={() => handleStatusCardClick(statusFilter === 'operation_tasks' ? null : 'operation_tasks')}
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-chart-5/10 rounded-lg">
+              <Clock className="h-6 w-6 text-chart-5" />
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">运营任务</p>
+              <p className="text-2xl font-semibold text-foreground">{statistics.operation_tasks}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card
+          className={`p-6 cursor-pointer transition-all hover:shadow-md ${
+            statusFilter === 'checking' ? 'ring-2 ring-chart-6 bg-chart-6/5' : ''
           }`}
           onClick={() => handleStatusCardClick(statusFilter === 'checking' ? null : 'checking')}
         >
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-chart-5/10 rounded-lg">
-              <CheckCircle className="h-6 w-6 text-chart-5" />
+            <div className="p-3 bg-chart-6/10 rounded-lg">
+              <CheckCircle className="h-6 w-6 text-chart-6" />
             </div>
             <div>
               <p className="text-sm text-muted-foreground">完成检查</p>
@@ -626,13 +701,13 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
 
         <Card
           className={`p-6 cursor-pointer transition-all hover:shadow-md ${
-            statusFilter === 'reviewing' ? 'ring-2 ring-chart-6 bg-chart-6/5' : ''
+            statusFilter === 'reviewing' ? 'ring-2 ring-chart-7 bg-chart-7/5' : ''
           }`}
           onClick={() => handleStatusCardClick(statusFilter === 'reviewing' ? null : 'reviewing')}
         >
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-chart-6/10 rounded-lg">
-              <AlertCircle className="h-6 w-6 text-chart-6" />
+            <div className="p-3 bg-chart-7/10 rounded-lg">
+              <AlertCircle className="h-6 w-6 text-chart-7" />
             </div>
             <div>
               <p className="text-sm text-muted-foreground">审核</p>
@@ -681,10 +756,10 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">标识</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">方案</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-foreground">倒计时</th>
-                {(statusFilter === 'in_progress' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
+                {(statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
                   <th className="px-6 py-4 text-left text-sm font-medium text-foreground">备注</th>
                 )}
-                {statusFilter === 'in_progress' && (
+                {(statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks') && (
                   <>
                     <th className="px-6 py-4 text-left text-sm font-medium text-foreground">上传图片</th>
                     <th className="px-6 py-4 text-left text-sm font-medium text-foreground">图片</th>
@@ -711,7 +786,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
               {loading || isPending ? (
                 <tr>
                   <td colSpan={
-                    statusFilter === 'in_progress' ? 12 : 
+                    (statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks') ? 12 : 
                     statusFilter === 'checking' ? 13 :
                     statusFilter === 'reviewing' ? 11 : 8
                   } className="px-6 py-8 text-center text-sm text-muted-foreground">
@@ -721,7 +796,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
               ) : error ? (
                 <tr>
                   <td colSpan={
-                    statusFilter === 'in_progress' ? 12 : 
+                    (statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks') ? 12 : 
                     statusFilter === 'checking' ? 13 :
                     statusFilter === 'reviewing' ? 11 : 8
                   } className="px-6 py-8 text-center text-sm text-destructive">
@@ -731,7 +806,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
               ) : taskData.length === 0 ? (
                 <tr>
                   <td colSpan={
-                    statusFilter === 'in_progress' ? 12 : 
+                    (statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks') ? 12 : 
                     statusFilter === 'checking' ? 13 :
                     statusFilter === 'reviewing' ? 11 : 8
                   } className="px-6 py-8 text-center text-sm text-muted-foreground">
@@ -793,7 +868,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                               >
                                 {getPriceReductionOptionText(record.price_reduction_failure_count || 0)}
                               </SelectItem>
-                              <SelectItem value="3">打处理</SelectItem>
+                              <SelectItem value="3">正常售卖</SelectItem>
                             </SelectContent>
                           </Select>
                         )}
@@ -801,7 +876,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                       <td className="px-6 py-4 text-sm text-muted-foreground">
                         {formatCountDown(record.count_down)}
                       </td>
-                      {(statusFilter === 'in_progress' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
+                      {(statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks' || statusFilter === 'checking' || statusFilter === 'reviewing') && (
                         <td className="px-6 py-4">
                           {editingNotes?.sku === record.ware_sku ? (
                             <Input
@@ -871,7 +946,7 @@ export default function TaskTimeline({ chargeFilter }: TaskTimelineProps) {
                           )}
                         </td>
                       )}
-                      {statusFilter === 'in_progress' && (
+                      {(statusFilter === 'warehouse_tasks' || statusFilter === 'operation_tasks') && (
                         <>
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-2">

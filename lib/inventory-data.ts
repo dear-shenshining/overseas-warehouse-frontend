@@ -439,6 +439,7 @@ export async function updateTaskCountDown(): Promise<{ success: boolean; error?:
 
     // 2. 处理超时任务（count_down < 0）
     // 获取所有超时的任务（只查询任务记录）
+    // 注意：包括 task_status = 0（未选择方案）的超时任务
     const timeoutTasksResult = await connection.query(
       `SELECT ware_sku, sale_day, charge, promised_land, promised_land_snapshot,
               task_status, inventory_num, sales_num, label, notes, price_reduction_failure_count
@@ -447,7 +448,7 @@ export async function updateTaskCountDown(): Promise<{ success: boolean; error?:
          WHEN promised_land = 0 OR promised_land IS NULL THEN 24 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
          ELSE 168 - EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600
        END) < 0
-       AND task_status IN (1, 2, 3, 4, 5)
+       AND task_status IN (0, 1, 2, 3, 4, 5)
        AND (task_status IS NOT NULL OR promised_land IS NOT NULL)`
     )
     
@@ -1034,19 +1035,23 @@ export async function getInventoryData(
  * 获取所有任务数据（从 task 表）
  * @param searchSku 搜索SKU（可选）
  * @param labelFilter 标签筛选（可选）：'over_15_days'=在售天数超20天，'has_inventory_no_sales'=有库存无销量
- * @param statusFilter 状态筛选（可选）：'no_solution'=未选择方案，'in_progress'=任务正在进行中，'checking'=完成检查，'reviewing'=审核中，'timeout'=超时任务（count_down < 0）
+ * @param statusFilter 状态筛选（可选）：'no_solution'=未选择方案，'warehouse_tasks'=仓库任务（退回厂家），'operation_tasks'=运营任务（降价清仓和正常售卖），'checking'=完成检查，'reviewing'=审核中，'timeout'=超时任务（count_down < 0）
  * @param chargeFilter 负责人筛选（可选）
  * @returns 任务数据数组
  */
 export async function getTaskData(
   searchSku?: string,
   labelFilter?: 'over_15_days' | 'has_inventory_no_sales',
-  statusFilter?: 'no_solution' | 'in_progress' | 'checking' | 'reviewing' | 'timeout',
-  chargeFilter?: string
+  statusFilter?: 'no_solution' | 'warehouse_tasks' | 'operation_tasks' | 'checking' | 'reviewing' | 'timeout',
+  chargeFilter?: string,
+  skipCountDownUpdate?: boolean // 是否跳过倒计时更新（仅查询时使用）
 ): Promise<InventoryRecord[]> {
   try {
-    // 先更新所有记录的 count_down（根据 promised_land 使用不同计算逻辑）
-    await updateTaskCountDown()
+    // 只有在需要时才更新所有记录的 count_down（根据 promised_land 使用不同计算逻辑）
+    // 切换筛选时不需要更新数据库，避免不必要的数据库操作和闪烁
+    if (!skipCountDownUpdate) {
+      await updateTaskCountDown()
+    }
     // 使用 CASE WHEN 根据 promised_land 的值计算 count_down（单位：小时）
     // PostgreSQL: EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - created_at)) / 3600 计算小时差
     // 只查询任务记录：task_status IS NOT NULL 或 promised_land IS NOT NULL
@@ -1073,19 +1078,21 @@ export async function getTaskData(
       sql += ` AND NOT (label::jsonb @> '[5]'::jsonb)`
     }
 
-    // 状态筛选
+    // 状态筛选（优化：先应用状态筛选，可以利用索引）
     if (statusFilter === 'no_solution') {
       // 未选择方案：task_status = 0
       sql += ' AND task_status = 0'
-    } else if (statusFilter === 'in_progress') {
-      // 任务正在进行中：task_status = 1 或 2 或 3
-      sql += ' AND task_status IN (1, 2, 3)'
+    } else if (statusFilter === 'warehouse_tasks') {
+      // 仓库任务：task_status = 1（退回厂家）
+      sql += ' AND task_status = 1'
+    } else if (statusFilter === 'operation_tasks') {
+      // 运营任务：task_status = 2 或 3（降价清仓和正常售卖）
+      sql += ' AND task_status IN (2, 3)'
     } else if (statusFilter === 'checking') {
       // 完成检查：task_status = 4
       sql += ' AND task_status = 4'
     } else if (statusFilter === 'reviewing') {
       // 审核中：task_status = 5
-      // 注意：前端需要根据管理员权限控制是否显示此筛选
       sql += ' AND task_status = 5'
     } else if (statusFilter === 'timeout') {
       // 超时任务：count_down < 0（单位：小时）
@@ -1176,106 +1183,57 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
   over_15_days: number // label包含4的数量（在售天数超20天）
   has_inventory_no_sales: number // label包含2但不包含1且不包含5的数量（有库存无销量）
   no_solution: number // task_status = 0的数量（未选择方案）
-  in_progress: number // task_status IN (1,2,3)的数量（任务正在进行中）
+  warehouse_tasks: number // task_status = 1的数量（仓库任务：退回厂家）
+  operation_tasks: number // task_status IN (2,3)的数量（运营任务：降价清仓和正常售卖）
+  in_progress: number // task_status IN (1,2,3)的数量（任务正在进行中，已废弃，保留用于兼容）
   checking: number // task_status = 4的数量（完成检查）
   reviewing: number // task_status = 5的数量（审核中）
   timeout: number // 超时任务数量
 }> {
   try {
-    // 统计label包含4的数量（在售天数超15天）
-    // PostgreSQL: 使用 JSONB @> 操作符
-    let over15DaysSql = "SELECT COUNT(*) as count FROM task WHERE label::jsonb @> '[4]'::jsonb"
-    const over15DaysParams: any[] = []
-    let paramIndex = 1
-    if (chargeFilter) {
-      over15DaysSql += ` AND charge = $${paramIndex}`
-      over15DaysParams.push(chargeFilter)
-      paramIndex++
-    }
-    const over15DaysResult = await query<{ count: string | number }>(over15DaysSql, over15DaysParams)
-    const over_15_days = Number(over15DaysResult[0]?.count) || 0
-
-    // 统计label包含2但不包含1且不包含5的数量（有库存无销量）
-    let hasInventoryNoSalesSql = "SELECT COUNT(*) as count FROM task WHERE (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)"
-    const hasInventoryNoSalesParams: any[] = []
-    paramIndex = 1
-    if (chargeFilter) {
-      hasInventoryNoSalesSql += ` AND charge = $${paramIndex}`
-      hasInventoryNoSalesParams.push(chargeFilter)
-      paramIndex++
-    }
-    const hasInventoryNoSalesResult = await query<{ count: string | number }>(hasInventoryNoSalesSql, hasInventoryNoSalesParams)
-    const has_inventory_no_sales = Number(hasInventoryNoSalesResult[0]?.count) || 0
-
-    // 统计task_status = 0的数量（未选择方案）
-    let noSolutionSql = 'SELECT COUNT(*) as count FROM task WHERE task_status = 0'
-    const noSolutionParams: any[] = []
-    paramIndex = 1
-    if (chargeFilter) {
-      noSolutionSql += ` AND charge = $${paramIndex}`
-      noSolutionParams.push(chargeFilter)
-      paramIndex++
-    }
-    const noSolutionResult = await query<{ count: string | number }>(noSolutionSql, noSolutionParams)
-    const no_solution = Number(noSolutionResult[0]?.count) || 0
-
-    // 统计task_status IN (1,2,3)的数量（任务正在进行中）
-    let inProgressSql = 'SELECT COUNT(*) as count FROM task WHERE task_status IN (1, 2, 3)'
-    const inProgressParams: any[] = []
-    paramIndex = 1
-    if (chargeFilter) {
-      inProgressSql += ` AND charge = $${paramIndex}`
-      inProgressParams.push(chargeFilter)
-      paramIndex++
-    }
-    const inProgressResult = await query<{ count: string | number }>(inProgressSql, inProgressParams)
-    const in_progress = Number(inProgressResult[0]?.count) || 0
-
-    // 统计task_status = 4的数量（完成检查）
-    let checkingSql = 'SELECT COUNT(*) as count FROM task WHERE task_status = 4'
-    const checkingParams: any[] = []
-    paramIndex = 1
-    if (chargeFilter) {
-      checkingSql += ` AND charge = $${paramIndex}`
-      checkingParams.push(chargeFilter)
-      paramIndex++
-    }
-    const checkingResult = await query<{ count: string | number }>(checkingSql, checkingParams)
-    const checking = Number(checkingResult[0]?.count) || 0
-
-    // 统计task_status = 5的数量（审核中）
-    let reviewingSql = 'SELECT COUNT(*) as count FROM task WHERE task_status = 5'
-    const reviewingParams: any[] = []
-    paramIndex = 1
-    if (chargeFilter) {
-      reviewingSql += ` AND charge = $${paramIndex}`
-      reviewingParams.push(chargeFilter)
-      paramIndex++
-    }
-    const reviewingResult = await query<{ count: string | number }>(reviewingSql, reviewingParams)
-    const reviewing = Number(reviewingResult[0]?.count) || 0
-
-    // 统计 count_down < 0 的数量（超时任务）
-    // PostgreSQL: 使用 EXTRACT(DAY FROM ...) 计算日期差
-    let timeoutSql = 'SELECT COUNT(*) as count FROM task WHERE (CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END) < 0'
-    const timeoutParams: any[] = []
-    paramIndex = 1
-    if (chargeFilter) {
-      timeoutSql += ` AND charge = $${paramIndex}`
-      timeoutParams.push(chargeFilter)
-      paramIndex++
-    }
-    const timeoutResult = await query<{ count: string | number }>(timeoutSql, timeoutParams)
-    const timeout = Number(timeoutResult[0]?.count) || 0
-
+    // 优化：使用单个查询获取所有统计数据，减少数据库往返次数
+    const chargeCondition = chargeFilter ? ` AND charge = $1` : ''
+    const params = chargeFilter ? [chargeFilter] : []
+    
+    const statsSql = `
+      SELECT 
+        COUNT(*) FILTER (WHERE label::jsonb @> '[4]'::jsonb) as over_15_days,
+        COUNT(*) FILTER (WHERE (label::jsonb @> '[2]'::jsonb) AND NOT (label::jsonb @> '[1]'::jsonb) AND NOT (label::jsonb @> '[5]'::jsonb)) as has_inventory_no_sales,
+        COUNT(*) FILTER (WHERE task_status = 0) as no_solution,
+        COUNT(*) FILTER (WHERE task_status = 1) as warehouse_tasks,
+        COUNT(*) FILTER (WHERE task_status IN (2, 3)) as operation_tasks,
+        COUNT(*) FILTER (WHERE task_status = 4) as checking,
+        COUNT(*) FILTER (WHERE task_status = 5) as reviewing,
+        COUNT(*) FILTER (WHERE (CASE WHEN promised_land = 0 THEN 1 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER ELSE 7 - EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))::INTEGER END) < 0) as timeout
+      FROM task
+      WHERE 1=1${chargeCondition}
+    `
+    
+    const statsResult = await query<{
+      over_15_days: string | number
+      has_inventory_no_sales: string | number
+      no_solution: string | number
+      warehouse_tasks: string | number
+      operation_tasks: string | number
+      checking: string | number
+      reviewing: string | number
+      timeout: string | number
+    }>(statsSql, params)
+    
+    const row = statsResult[0] || {}
+    const warehouse_tasks = Number(row.warehouse_tasks) || 0
+    const operation_tasks = Number(row.operation_tasks) || 0
+    
     return {
-      over_15_days,
-      has_inventory_no_sales,
-      no_solution,
-      in_progress,
-      checking,
-      reviewing,
-      timeout,
+      over_15_days: Number(row.over_15_days) || 0,
+      has_inventory_no_sales: Number(row.has_inventory_no_sales) || 0,
+      no_solution: Number(row.no_solution) || 0,
+      warehouse_tasks,
+      operation_tasks,
+      in_progress: warehouse_tasks + operation_tasks, // 保留用于兼容
+      checking: Number(row.checking) || 0,
+      reviewing: Number(row.reviewing) || 0,
+      timeout: Number(row.timeout) || 0,
     }
   } catch (error) {
     console.error('获取任务统计数据失败:', error)
@@ -1292,6 +1250,9 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
       let has_inventory_no_sales = 0
       let no_solution = 0
       let in_progress = 0
+
+      let warehouse_tasks = 0
+      let operation_tasks = 0
 
       allData.forEach((row: any) => {
         let labels: number[] = []
@@ -1311,9 +1272,20 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
         }
 
         const promisedLand = row.promised_land ?? 0
+        const taskStatus = row.task_status ?? promisedLand
+        
         if (promisedLand === 0) {
           no_solution++
-        } else if (promisedLand === 1 || promisedLand === 2 || promisedLand === 3) {
+        } else if (taskStatus === 1) {
+          // 仓库任务：退回厂家
+          warehouse_tasks++
+        } else if (taskStatus === 2 || taskStatus === 3) {
+          // 运营任务：降价清仓和正常售卖
+          operation_tasks++
+        }
+        
+        // 保留 in_progress 用于兼容
+        if (promisedLand === 1 || promisedLand === 2 || promisedLand === 3) {
           in_progress++
         }
       })
@@ -1331,7 +1303,9 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
         over_15_days,
         has_inventory_no_sales,
         no_solution,
-        in_progress,
+        warehouse_tasks,
+        operation_tasks,
+        in_progress, // 保留用于兼容
         checking,
         reviewing,
         // 统计 count_down < 0 的数量（超时任务，单位：小时）
@@ -1344,7 +1318,7 @@ export async function getTaskStatistics(chargeFilter?: string): Promise<{
       }
     } catch (fallbackError) {
       console.error('备用统计方法失败:', fallbackError)
-      return { over_15_days: 0, has_inventory_no_sales: 0, no_solution: 0, in_progress: 0, checking: 0, reviewing: 0, timeout: 0 }
+        return { over_15_days: 0, has_inventory_no_sales: 0, no_solution: 0, warehouse_tasks: 0, operation_tasks: 0, in_progress: 0, checking: 0, reviewing: 0, timeout: 0 }
     }
   }
 }

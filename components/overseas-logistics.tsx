@@ -302,37 +302,32 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
     const searchNumbers = parseSearchNumbers(searchQuery)
     
-    if (searchNumbers.length === 1) {
-      // 单个单号，直接搜索
-      setActualSearchNumbers(searchNumbers) // 保存搜索的单号
-    startTransition(() => {
-        loadLogisticsData(searchNumbers[0], statusFilter, 1)
-        loadStatistics()
-      })
-    } else {
-      // 多个单号，先批量查询，然后显示结果
-      const result = await batchSearchLogistics(searchNumbers)
-      if (result.success) {
+    // 无论是单个还是多个单号，都需要先通过 batchSearchLogistics 转换
+    // 因为用户可能输入的是PO单号、发货单号或转单号
+    const result = await batchSearchLogistics(searchNumbers)
+    if (result.success) {
+      if (searchNumbers.length > 1) {
+        // 多个单号，显示搜索结果对话框
         setSearchResult({
           total: searchNumbers.length,
           found: result.found.length,
           notFound: result.notFound,
         })
         setSearchDialogOpen(true)
-        
-        // 使用找到的单号进行查询
-        if (result.found.length > 0) {
-          setActualSearchNumbers(result.found) // 保存实际找到的单号
-          startTransition(() => {
-            loadLogisticsData(result.found.join(','), statusFilter, 1)
-            loadStatistics()
-          })
-        } else {
-          setActualSearchNumbers([]) // 没有找到，清空
-          setLogisticsData([])
-          setTotalRecords(0)
-          setTotalPages(0)
-        }
+      }
+      
+      // 使用找到的单号进行查询
+      if (result.found.length > 0) {
+        setActualSearchNumbers(result.found) // 保存实际找到的单号（search_num）
+        startTransition(() => {
+          loadLogisticsData(result.found.join(','), statusFilter, 1)
+          loadStatistics()
+        })
+      } else {
+        setActualSearchNumbers([]) // 没有找到，清空
+        setLogisticsData([])
+        setTotalRecords(0)
+        setTotalPages(0)
       }
     }
   }
@@ -613,11 +608,26 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
 
         // 调用爬虫处理一批追踪号
         // 构建筛选条件
+        // 注意：爬虫只支持 search_num 查询，所以需要使用已转换的 actualSearchNumbers
+        // 如果没有已转换的单号，但有搜索输入，先转换
+        let searchNumsForCrawler: string[] | undefined = undefined
+        if (actualSearchNumbers.length > 0) {
+          // 使用已转换的 search_num 列表
+          searchNumsForCrawler = actualSearchNumbers
+        } else if (searchQuery && searchQuery.trim()) {
+          // 如果没有已转换的单号，先转换
+          const searchNumbers = parseSearchNumbers(searchQuery)
+          const batchResult = await batchSearchLogistics(searchNumbers)
+          if (batchResult.success && batchResult.found.length > 0) {
+            searchNumsForCrawler = batchResult.found
+          }
+        }
+        
         const filters = {
           statusFilter: statusFilter || undefined,
           dateFrom: dateFrom && dateFrom.trim() ? dateFrom : undefined,
           dateTo: dateTo && dateTo.trim() ? dateTo : undefined,
-          searchNums: searchQuery ? parseSearchNumbers(searchQuery) : undefined,
+          searchNums: searchNumsForCrawler,
           hasTransferFilter: hasTransferFilter || undefined,
           updatedAtToday: updatedAtTodayFilter || undefined,
         }
@@ -953,7 +963,7 @@ const OverseasLogistics = forwardRef<OverseasLogisticsRef, OverseasLogisticsProp
           <div className="flex-1 min-w-[200px] relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-              placeholder="输入发货单号查询（支持多个，用空格、逗号、换行分隔）..."
+              placeholder="输入PO单号/发货单号/转单号查询（支持多个，用空格、逗号、换行分隔）..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyPress={handleKeyPress}

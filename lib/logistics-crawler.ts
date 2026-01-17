@@ -96,10 +96,30 @@ async function fetchPendingSearchNumbers(
       paramIndex++
     }
 
-    // 应用货运单号筛选
+    // 应用货运单号筛选（支持同时查询 po单号、发货单号、转单号）
     if (filters?.searchNums && filters.searchNums.length > 0) {
+      // 检查字段是否存在
+      const { getLogisticsFields } = await import('./logistics-field-cache')
+      const { hasTransferNum, hasOrderNum } = await getLogisticsFields()
+      
       const placeholders = filters.searchNums.map((_, i) => `$${paramIndex + i}`).join(',')
-      whereConditions.push(`search_num IN (${placeholders})`)
+      const conditions: string[] = []
+      
+      // 发货单号（search_num）总是存在
+      conditions.push(`search_num IN (${placeholders})`)
+      
+      // 转单号（transfer_num）- 优先查询转单号
+      if (hasTransferNum) {
+        conditions.push(`transfer_num IN (${placeholders})`)
+      }
+      
+      // 订单号（order_num）
+      if (hasOrderNum) {
+        conditions.push(`order_num IN (${placeholders})`)
+      }
+      
+      // 使用 OR 连接，只要匹配任意一个字段即可
+      whereConditions.push(`(${conditions.join(' OR ')})`)
       params.push(...filters.searchNums)
       paramIndex += filters.searchNums.length
     }
@@ -172,8 +192,28 @@ async function fetchPendingSearchNumbers(
       maxIdParamIndex++
     }
     if (filters?.searchNums && filters.searchNums.length > 0) {
+      // 检查字段是否存在（与上面的查询保持一致）
+      const { getLogisticsFields } = await import('./logistics-field-cache')
+      const { hasTransferNum, hasOrderNum } = await getLogisticsFields()
+      
       const placeholders = filters.searchNums.map((_, i) => `$${maxIdParamIndex + i}`).join(',')
-      maxIdWhereWithParams.push(`search_num IN (${placeholders})`)
+      const conditions: string[] = []
+      
+      // 发货单号（search_num）总是存在
+      conditions.push(`search_num IN (${placeholders})`)
+      
+      // 转单号（transfer_num）- 优先查询转单号
+      if (hasTransferNum) {
+        conditions.push(`transfer_num IN (${placeholders})`)
+      }
+      
+      // 订单号（order_num）
+      if (hasOrderNum) {
+        conditions.push(`order_num IN (${placeholders})`)
+      }
+      
+      // 使用 OR 连接，只要匹配任意一个字段即可
+      maxIdWhereWithParams.push(`(${conditions.join(' OR ')})`)
       maxIdParams.push(...filters.searchNums)
     }
     if (filters?.updatedAtToday) {
@@ -460,10 +500,54 @@ function parseTrackingHTML(html: string): TrackingResult {
 /**
  * 处理单个追踪号
  * 不再重试，每个追踪号只处理一次
+ * 如果有转单号，只爬转单号，不爬原始单号
  */
 async function processTrackingNumber(trackingNumber: string): Promise<{ success: boolean }> {
   try {
-    // 爬取追踪信息
+    // 先检查是否有转单号
+    const transferNumResult = await query<{ transfer_num: string | null }>(
+      `SELECT transfer_num FROM post_searchs WHERE search_num = $1 AND transfer_num IS NOT NULL AND transfer_num != ''`,
+      [trackingNumber]
+    )
+
+    // 如果有转单号，只爬转单号
+    if (transferNumResult.length > 0 && transferNumResult[0].transfer_num) {
+      const transferNum = transferNumResult[0].transfer_num
+      console.log(`📦 原始单号 ${trackingNumber} 有转单号 ${transferNum}，只查询转单号状态`)
+      
+      const transferResult = await fetchTrackingInfo(transferNum)
+      if (transferResult) {
+        // 转单号查询成功，用转单号的状态更新原始单号
+        if (transferResult.isNotRegistered) {
+          // 转单号未注册，更新原始单号的状态为 Not registered
+          console.log(`✅ 转单号 ${transferNum} 未注册，更新原始单号 ${trackingNumber} 的状态为 Not registered`)
+          await updateSearchState(trackingNumber, 'Not registered')
+          return { success: true }
+        } else if (transferResult.history && transferResult.history.length > 0) {
+          // 转单号有状态更新，用转单号的状态更新原始单号
+          const lastRecord = transferResult.history[transferResult.history.length - 1]
+          const shippingRecord = String(lastRecord.shipping_track_record || '')
+          let stateToUpdate = shippingRecord
+          if (shippingRecord.includes('Final delivery')) {
+            stateToUpdate = 'Final delivery'
+          }
+          console.log(`✅ 转单号 ${transferNum} 状态更新为 ${stateToUpdate}，更新原始单号 ${trackingNumber} 的状态`)
+          await updateSearchState(trackingNumber, stateToUpdate)
+          return { success: true }
+        } else {
+          // 转单号查询成功但没有历史记录，更新原始单号的 updated_at
+          console.log(`⚠️ 转单号 ${transferNum} 查询成功但没有历史记录，更新原始单号 ${trackingNumber} 的 updated_at`)
+          await updateSearchState(trackingNumber, null) // 只更新时间戳
+          return { success: true }
+        }
+      } else {
+        // 转单号查询失败
+        console.log(`❌ 转单号 ${transferNum} 查询失败`)
+        return { success: false }
+      }
+    }
+
+    // 没有转单号，爬取原始单号的追踪信息
     const result = await fetchTrackingInfo(trackingNumber)
 
     if (result) {

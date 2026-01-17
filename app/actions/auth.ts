@@ -2,7 +2,7 @@
 
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-
+ 
 /**
  * 登录验证
  * 支持两套密码系统：
@@ -31,6 +31,7 @@ export async function login(username: string, password: string) {
       // 完整权限（管理员）：可以查看"每日发货毛利分析"和"每日发货毛利异常"，可以审核任务
       canViewProfitAnalysis = true
       isAdmin = true
+      console.log('完整权限（管理员）：可以查看"每日发货毛利分析"和"每日发货毛利异常"，可以审核任务')
     } else if (password === limitedAccessPassword) {
       // 受限权限（普通用户）：只能查看"每日发货毛利异常"
       canViewProfitAnalysis = false

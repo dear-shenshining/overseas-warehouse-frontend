@@ -110,15 +110,24 @@ export async function getLogisticsData(
     const searchNums = searchNum.split(',').map(s => s.trim()).filter(s => s)
     if (searchNums.length > 0) {
       const placeholders = searchNums.map((_, i) => `$${paramIndex + i}`).join(',')
-      // 如果有转单号字段，优先查转单号，没有转单号才查原始单号
+      // 支持同时查询 po单号（order_num）、发货单号（search_num）、转单号（transfer_num）
+      const conditions: string[] = []
+      
+      // 发货单号（search_num）总是存在
+      conditions.push(`p.search_num IN (${placeholders})`)
+      
+      // 转单号（transfer_num）
       if (hasTransferNum) {
-        sql += ` AND (
-          p.transfer_num IN (${placeholders})
-          OR (p.transfer_num IS NULL OR p.transfer_num = '') AND p.search_num IN (${placeholders})
-        )`
-      } else {
-        sql += ` AND p.search_num IN (${placeholders})`
+        conditions.push(`p.transfer_num IN (${placeholders})`)
       }
+      
+      // 订单号（order_num）
+      if (hasOrderNum) {
+        conditions.push(`p.order_num IN (${placeholders})`)
+      }
+      
+      // 使用 OR 连接，只要匹配任意一个字段即可
+      sql += ` AND (${conditions.join(' OR ')})`
       params.push(...searchNums)
       paramIndex += searchNums.length
     }
@@ -221,15 +230,24 @@ export async function getLogisticsData(
     const searchNums = searchNum.split(',').map(s => s.trim()).filter(s => s)
     if (searchNums.length > 0) {
       const placeholders = searchNums.map((_, i) => `$${countParamIndex + i}`).join(',')
-      // 如果有转单号字段，优先查转单号，没有转单号才查原始单号
+      // 支持同时查询 po单号（order_num）、发货单号（search_num）、转单号（transfer_num）
+      const conditions: string[] = []
+      
+      // 发货单号（search_num）总是存在
+      conditions.push(`p.search_num IN (${placeholders})`)
+      
+      // 转单号（transfer_num）
       if (hasTransferNum) {
-        countSql += ` AND (
-          p.transfer_num IN (${placeholders})
-          OR (p.transfer_num IS NULL OR p.transfer_num = '') AND p.search_num IN (${placeholders})
-        )`
-      } else {
-        countSql += ` AND p.search_num IN (${placeholders})`
+        conditions.push(`p.transfer_num IN (${placeholders})`)
       }
+      
+      // 订单号（order_num）
+      if (hasOrderNum) {
+        conditions.push(`p.order_num IN (${placeholders})`)
+      }
+      
+      // 使用 OR 连接，只要匹配任意一个字段即可
+      countSql += ` AND (${conditions.join(' OR ')})`
       countParams.push(...searchNums)
       countParamIndex += searchNums.length
     }

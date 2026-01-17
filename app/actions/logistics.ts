@@ -246,17 +246,28 @@ export async function batchSearchLogistics(searchNums: string[]) {
       }
     }
 
-    // 检查转单号字段是否存在
-    const { hasTransferNum } = await getLogisticsFields()
+    // 检查字段是否存在
+    const { hasTransferNum, hasOrderNum } = await getLogisticsFields()
     
     const placeholders = searchNums.map((_, i) => `$${i + 1}`).join(',')
-    // 如果有转单号字段，优先查转单号，没有转单号才查原始单号
-    let sql: string
+    // 支持同时查询 po单号（order_num）、发货单号（search_num）、转单号（transfer_num）
+    const conditions: string[] = []
+    
+    // 发货单号（search_num）总是存在
+    conditions.push(`search_num IN (${placeholders})`)
+    
+    // 转单号（transfer_num）
     if (hasTransferNum) {
-      sql = `SELECT DISTINCT search_num FROM post_searchs WHERE transfer_num IN (${placeholders}) OR ((transfer_num IS NULL OR transfer_num = '') AND search_num IN (${placeholders}))`
-    } else {
-      sql = `SELECT search_num FROM post_searchs WHERE search_num IN (${placeholders})`
+      conditions.push(`transfer_num IN (${placeholders})`)
     }
+    
+    // 订单号（order_num）
+    if (hasOrderNum) {
+      conditions.push(`order_num IN (${placeholders})`)
+    }
+    
+    // 使用 OR 连接，只要匹配任意一个字段即可
+    const sql = `SELECT DISTINCT search_num FROM post_searchs WHERE (${conditions.join(' OR ')})`
     const results = await query<{ search_num: string }>(sql, searchNums)
     
     const found = results.map(r => r.search_num)
